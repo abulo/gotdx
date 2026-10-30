@@ -19,57 +19,60 @@ type MACQuotes struct {
 	reply      *MACQuotesReply
 }
 
-// MACQuotesRequest 保存行情快照查询的市场与标的代码参数，其余字段为协议保留占位。
+// MACQuotesRequest 保存行情快照查询的市场、代码与查询日期参数，其余字段为协议保留占位。
 type MACQuotesRequest struct {
-	Market uint16
-	Code   [22]byte
-	Zero1  uint16
-	Zero2  uint16
-	One    uint16
-	Zero3  uint16
-	Zero4  uint16
-	Zero5  uint16
-	Zero6  uint16
+	Market uint16   // 市场代码，两字节，取值见 `types.Market*` 常量。
+	Code   [22]byte // 证券代码，GBK 编码定长 22 字节，不足补空字符。
+	Zero1  uint16   // 查询日期低 16 位（`queryDate & 0xffff`），查询日期为 0 时表示最新交易日。
+	Zero2  uint16   // 查询日期高 16 位（`queryDate >> 16`），与 `Zero1` 拼成完整日期整数。
+	One    uint16   // 协议固定标志位，固定填 1，为 0 时由构造函数回填 1，语义待确认。
+	Zero3  uint16   // 协议保留占位字段，语义待确认。
+	Zero4  uint16   // 协议保留占位字段，语义待确认。
+	Zero5  uint16   // 协议保留占位字段，语义待确认。
+	Zero6  uint16   // 协议保留占位字段，语义待确认。
 }
 
 // MACQuotesReply 保存行情快照、分时采样序列与汇总行情数据。
 type MACQuotesReply struct {
-	Market       uint16
-	Code         string
-	Date         uint32
-	Unknown      uint8 // 协议保留槽位，语义待确认
-	Price        float64
-	Count        uint16
-	ChartData    []MACQuoteChartItem
-	Name         string
-	Decimal      uint8
-	Category     uint16
-	VolUnit      float64
-	DateTime     time.Time
-	PreClose     float64
-	Open         float64
-	High         float64
-	Low          float64
-	Close        float64
-	Momentum     float64
-	Vol          uint32
-	Amount       float64
-	Turnover     float64
-	Avg          float64
-	Industry     uint32
-	IndustryCode string
+	Market       uint16              // 市场代码，两字节。
+	Code         string              // 证券代码，GBK 解码。
+	Date         uint32              // 行情日期打包整数（YYYYMMDD），四字节。
+	Unknown      uint8               // 协议保留槽位，语义待确认。
+	Price        float64             // 最新成交价，单精度浮点还原。
+	Count        uint16              // 分时采样点数，两字节。
+	ChartData    []MACQuoteChartItem // 分时采样序列，按时间顺序排列。
+	Name         string              // 证券名称，GBK 解码。
+	Decimal      uint8               // 价格小数位数。
+	Category     uint16              // 证券类别代码，两字节。
+	VolUnit      float64             // 成交量量纲换算系数，单精度浮点还原。
+	DateTime     time.Time           // 汇总行情对应的本地时间。
+	PreClose     float64             // 昨收价，单精度浮点还原。
+	Open         float64             // 开盘价，单精度浮点还原。
+	High         float64             // 最高价，单精度浮点还原。
+	Low          float64             // 最低价，单精度浮点还原。
+	Close        float64             // 收盘价，单精度浮点还原。
+	Momentum     float64             // 动量指标，单精度浮点还原，语义待确认。
+	Vol          uint32              // 累计成交量，四字节。
+	Amount       float64             // 累计成交额，单精度浮点还原。
+	Turnover     float64             // 换手率，单精度浮点还原。
+	Avg          float64             // 均价，单精度浮点还原。
+	Industry     uint32              // 行业分类编号，四字节。
+	IndustryCode string              // 由行业编号换算得到的行业板块代码。
 }
 
 // MACQuoteChartItem 表示分时图上的一个采样点，包含分钟时间标签、成交价、均价、累计成交量与动量值。
 type MACQuoteChartItem struct {
-	Time     string
-	Price    float64
-	Avg      float64
-	Vol      uint32
-	Momentum float64
+	Time     string  // 分时时间标签，格式 HH:MM:SS，由分钟偏移换算得到。
+	Price    float64 // 该时点成交价，单精度浮点还原。
+	Avg      float64 // 该时点均价，单精度浮点还原。
+	Vol      uint32  // 累计成交量，四字节。
+	Momentum float64 // 该时点动量值，单精度浮点还原，语义待确认。
 }
 
 // NewMACQuotes 创建行情快照查询对象；请求参数为空时使用内置默认参数。
+//
+// 参数 `req` 指定预填查询参数，可传 `nil`：`Market` 为市场代码、`Code` 为证券代码；
+// 查询日期由 `Zero1`、`Zero2` 分别保存低、高 16 位，传 0 表示取最新交易日；`One` 为 0 时回填 1。
 func NewMACQuotes(req *MACQuotesRequest) *MACQuotes {
 	obj := &MACQuotes{
 		reqHeader:  new(ReqHeader),
@@ -95,16 +98,23 @@ func (obj *MACQuotes) applyRequest(req *MACQuotesRequest) {
 	obj.request = req
 }
 
-// BuildRequest 编码请求参数并返回完整协议报文；序列化失败时返回错误。
+// BuildRequest 编码请求参数并返回完整协议报文；结构体序列化失败时返回错误。
+//
+// 该方法无外部入参，从已填充的 `request` 读取参数：整个请求结构整体写入负载，
+// 再由 `buildExRequest` 追加命令码 `KMSG_MACQUOTES` 与请求头封装成完整报文。
 func (obj *MACQuotes) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
+	// 请求结构字段与线上布局一致，整体序列化即可。
 	if err := binary.Write(payload, binary.LittleEndian, obj.request); err != nil {
 		return nil, err
 	}
+	// 追加命令码与标准请求头，组装为可直接发送的完整报文。
 	return buildExRequest(KMSG_MACQUOTES, payload.Bytes())
 }
 
 // ParseResponse 解码服务端返回的字节流并填充响应；报文长度不足或记录区不完整时返回错误。
+//
+// 参数 `header` 为服务端回传的响应头，`data` 为解压后的响应负载字节流。
 func (obj *MACQuotes) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) < 35 {
@@ -112,7 +122,7 @@ func (obj *MACQuotes) ParseResponse(header *RespHeader, data []byte) error {
 	}
 
 	// 35 字节头部：市场（0:2）、GBK 代码（2:24）、打包日期（24:28）、保留字节（28）、
-	// 现价（29:33）、分时点数（33:35），整数按小端序、价格按单精度浮点还原。
+	// 现价（29:33）、分时点数（33:35），整数、价格按单精度浮点还原。
 	obj.reply.Market = binary.LittleEndian.Uint16(data[:2])
 	obj.reply.Code = Utf8ToGbk(data[2:24])
 	obj.reply.Date = binary.LittleEndian.Uint32(data[24:28])
@@ -179,6 +189,9 @@ func (obj *MACQuotes) Response() *MACQuotesReply {
 }
 
 // formatMACQuoteDateTime 将打包日期与打包时间两个整数拆分，组合为本地时间。
+//
+// 参数 `dateRaw` 为打包日期整数（YYYYMMDD），`timeRaw` 为打包时间整数（HHMMSS）；
+// 返回值为本地时区组合后的时间。
 func formatMACQuoteDateTime(dateRaw uint32, timeRaw uint32) time.Time {
 	year := int(dateRaw / 10000)
 	month := int((dateRaw % 10000) / 100)

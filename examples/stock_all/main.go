@@ -22,12 +22,12 @@ func main() {
 		{market: types.MarketSH},
 		{market: types.MarketBJ},
 	} {
-		// 依次遍历深市、沪市、北交所三个市场。
-
+		// 依次遍历 `MarketSZ`（深市）、`MarketSH`（沪市）、`MarketBJ`（北交所）三个市场；
+		// `StockAll` 按固定页大小自动翻页，返回该市场合并后的全部证券条目。
 		if items, err := client.StockAll(market.market.Uint8()); err == nil {
 			for _, item := range items {
 				code := fmt.Sprintf("%s.%s", item.Code, market.market.String())
-				// 仅保留被判定为普通股票的证券，跳过指数、基金、债券等品种。
+				// `IsStock` 按代码形态判定普通股票，跳过指数、基金、债券等品种。
 				if types.IsStock(code) {
 					log.Println(code, item.Name)
 					i += 1

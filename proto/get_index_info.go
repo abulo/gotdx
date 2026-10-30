@@ -16,42 +16,45 @@ type GetIndexInfo struct {
 
 // GetIndexInfoRequest 是指数实时概况查询的请求参数。
 type GetIndexInfoRequest struct {
-	Market uint16  // 市场代码。
-	Code   [6]byte // 指数代码。
-	Zero   uint32  // 保留字段。
+	Market uint16  // 市场代码（2 字节），取值与行情协议市场枚举一致。
+	Code   [6]byte // 6 字节定长指数代码，尾部以零字节填充。
+	Zero   uint32  // 协议保留占位，发送时填 0，语义待确认。
 }
 
 // GetIndexInfoReply 是指数实时概况查询的响应数据。
 type GetIndexInfoReply struct {
-	OrderCount uint32           // 委托明细条数。
-	Market     uint8            // 市场代码。
-	Code       string           // 指数代码。
-	Active     uint16           // 活跃度。
-	Close      float64          // 最新值。
-	PreClose   float64          // 昨收值。
-	Diff       float64          // 涨跌值。
-	Open       float64          // 开盘值。
-	High       float64          // 最高值。
-	Low        float64          // 最低值。
-	ServerTime string           // 服务端时间。
-	AfterHour  int              // 盘后字段或扩展标记。
-	Vol        int              // 总成交量。
-	CurVol     int              // 现量。
-	Amount     float64          // 总成交额。
-	OpenAmount int              // 开盘金额。
+	OrderCount uint32           // 委托档位明细条数（4 字节）。
+	Market     uint8            // 回显市场代码（1 字节）。
+	Code       string           // 回显指数代码。
+	Active     uint16           // 活跃度，统计口径语义待确认。
+	Close      float64          // 最新点位；点位按百分之一刻度存储，解析时已除以 100 还原。
+	PreClose   float64          // 昨收点位，刻度口径同最新点位。
+	Diff       float64          // 涨跌值（最新点位减昨收点位）。
+	Open       float64          // 开盘点位，刻度口径同最新点位。
+	High       float64          // 最高点位，刻度口径同最新点位。
+	Low        float64          // 最低点位，刻度口径同最新点位。
+	ServerTime string           // 服务端时间，由报文中的编码整数格式化得到。
+	AfterHour  int              // 盘后字段或扩展标记，语义待确认。
+	Vol        int              // 总成交量，单位口径以协议为准。
+	CurVol     int              // 现量，即最近一笔成交量。
+	Amount     float64          // 总成交额；协议内为 4 字节浮点位模式。
+	OpenAmount int              // 开盘金额，口径语义待确认。
 	UpCount    int              // 上涨家数。
 	DownCount  int              // 下跌家数。
-	Orders     []IndexInfoOrder // 委托分布明细。
+	Orders     []IndexInfoOrder // 解析后的档位委托分布明细。
 }
 
 // IndexInfoOrder 表示一条指数档位（委托分布）记录，含档位价格与挂单量。
 type IndexInfoOrder struct {
-	Price   float64 // 档位价格。
+	Price   float64 // 档位点位；协议内为累计差值，解析时累加后除以 100 还原。
 	Unknown int     // 未确认字段，语义待确认。
-	Vol     int     // 档位挂单量。
+	Vol     int     // 该档位挂单量，单位口径以协议为准。
 }
 
-// NewGetIndexInfo 创建并初始化指数实时概况查询请求对象；传入参数为空时使用默认参数。
+// NewGetIndexInfo 创建并初始化指数实时概况查询请求对象。
+//
+// 参数 `req` 携带 `Market` 市场代码与 `Code` 指数代码；传 `nil` 时仅初始化协议骨架。
+// 返回初始化完成、可直接调用 `BuildRequest` 的协议对象。
 func NewGetIndexInfo(req *GetIndexInfoRequest) *GetIndexInfo {
 	obj := new(GetIndexInfo)
 	obj.reqHeader = new(ReqHeader)
@@ -73,18 +76,25 @@ func (obj *GetIndexInfo) applyRequest(req *GetIndexInfoRequest) {
 	obj.request = req
 }
 
-// BuildRequest 将请求头与请求参数按小端序编码为协议字节流；编码失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为协议字节流。
+//
+// 先回填定长包头长度，再依次写入请求头与请求参数；成功返回可直接发送的字节流，
+// 写出失败时返回错误。
 func (obj *GetIndexInfo) BuildRequest() ([]byte, error) {
+	// 包头定长 0x0e 字节，两个长度校验位保持一致。
 	obj.reqHeader.PkgLen1 = 0x0e
 	obj.reqHeader.PkgLen2 = 0x0e
 
 	buf := new(bytes.Buffer)
+	// 请求头与请求参数均拼装进同一缓冲。
 	err := binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	err = binary.Write(buf, binary.LittleEndian, obj.request)
 	return buf.Bytes(), err
 }
 
 // ParseResponse 解析服务端返回的指数实时概况与档位分布并填充响应对象。
+//
+// 参数 `header` 为协议响应头，`data` 为去除响应头后的报文体；固定头字段读取失败时返回错误。
 // 固定头为委托条数、市场、代码、活跃度；其后是按协议顺序排列的变长快照字段，
 // 价格类字段存为相对最新点位的差值，快照读完后统一还原绝对点位。
 func (obj *GetIndexInfo) ParseResponse(header *RespHeader, data []byte) error {
@@ -174,6 +184,7 @@ func (obj *GetIndexInfo) ParseResponse(header *RespHeader, data []byte) error {
 }
 
 // Response 返回解析完成后的指数实时概况响应数据。
+// 未调用 `ParseResponse` 前，返回对象的各字段保持零值。
 func (obj *GetIndexInfo) Response() *GetIndexInfoReply {
 	return obj.reply
 }

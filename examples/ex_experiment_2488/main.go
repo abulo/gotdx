@@ -15,7 +15,8 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
-	// 第三个参数为协议内部模式取值，含义语义待确认。
+	// 参数 `category` 为美股类别，`code` 为 `TSLA`；`mode` 为协议内部模式取值 55，其取值含义与
+	// 响应各字段语义待确认。
 	items, err := client.ExExperiment2488(types.ExCategoryUSStock, "TSLA", 55)
 	if err != nil {
 		log.Fatalln(err)

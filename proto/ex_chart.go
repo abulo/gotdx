@@ -20,28 +20,30 @@ type ExGetTickChart struct {
 // ExGetTickChartRequest 保存当日分时图查询的市场类别与证券代码参数。
 type ExGetTickChartRequest struct {
 	Category uint8    // 市场类别。
-	Code     [23]byte // 证券代码。
-	Reserved [8]byte  // 保留字段。
+	Code     [23]byte // 证券代码，GBK 定长 23 字节，不足补零。
+	Reserved [8]byte  // 8 字节保留填充区，发送时置零，语义待确认。
 }
 
 // ExGetTickChartReply 保存解码完成的当日分时图响应结果。
 type ExGetTickChartReply struct {
-	Category uint8             // 市场类别。
-	Code     string            // 证券代码。
-	Count    uint16            // 返回分钟点数。
-	List     []ExTickChartData // 分时数据列表。
+	Category uint8             // 回显市场类别。
+	Code     string            // 证券代码，GBK 解码。
+	Count    uint16            // 返回分钟点数，`uint16`。
+	List     []ExTickChartData // 解码出的分时数据列表。
 }
 
 // ExTickChartData 表示分时图上的一个分钟点，包含时间、现价、均价与成交量。
 type ExTickChartData struct {
-	Time  string  // 分钟时间，格式为 `HH:MM`。
-	Price float64 // 该分钟现价。
-	Avg   float64 // 该分钟均价。
-	Vol   int     // 该分钟成交量。
+	Time  string  // 分钟时间，格式为 `HH:MM`，由分钟数`uint16` 换算。
+	Price float64 // 该分钟现价，由 `float32` 还原，单位元。
+	Avg   float64 // 该分钟均价，由 `float32` 还原，单位元。
+	Vol   int     // 该分钟成交量，由`uint32` 还原。
 }
 
-// NewExGetTickChart 构造当日分时图查询协议实例；传入非空请求时覆盖默认参数，
-// 否则使用内置默认报文头与消息号。
+// NewExGetTickChart 构造当日分时图查询协议实例。
+//
+// 参数 `req` 指定市场类别与证券代码；传入非空对象时覆盖默认参数，传 `nil` 时使用空请求。返回的
+// 实例零值不可直接使用。
 func NewExGetTickChart(req *ExGetTickChartRequest) *ExGetTickChart {
 	obj := &ExGetTickChart{
 		reqHeader:  new(ReqHeader),
@@ -63,19 +65,25 @@ func (obj *ExGetTickChart) applyRequest(req *ExGetTickChartRequest) {
 	obj.request = req
 }
 
-// BuildRequest 把当前请求参数编码为可发送的扩展协议字节流；序列化失败时返回非空错误。
+// BuildRequest 把当前请求参数编码为可发送的扩展协议字节流。
+//
+// 返回值第一项为编码后的请求字节流；参数序列化失败时第二项返回非空错误。
 func (obj *ExGetTickChart) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
+	// 请求体定长序列化，字段顺序与服务端约定一致。
 	if err := binary.Write(payload, binary.LittleEndian, obj.request); err != nil {
 		return nil, err
 	}
 	return buildExRequest(KMSG_EXTICKCHART, payload.Bytes())
 }
 
-// ParseResponse 从服务端响应字节流解码当日分时数据并填充响应；响应长度不足或分钟点越界时返回非空错误。
+// ParseResponse 从服务端响应字节流解码当日分时数据并填充响应。
+//
+// 参数 `header` 为协议响应头，`data` 为服务端返回的原始响应字节流；头部不足 34 字节或分钟点越界时
+// 返回非空错误，解码成功返回 `nil`。
 func (obj *ExGetTickChart) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
-	// 头部至少需要 34 字节。
+	// 头部至少需要 34 字节：类别 1、代码 31 字节 GBK、条数 2 字节`uint16`。
 	if len(data) < 34 {
 		return fmt.Errorf("invalid ex tick chart response length: %d", len(data))
 	}
@@ -91,6 +99,8 @@ func (obj *ExGetTickChart) ParseResponse(header *RespHeader, data []byte) error 
 		if pos+18 > len(data) {
 			return fmt.Errorf("invalid ex tick chart item %d", i)
 		}
+		// 前 2 字节为分钟数`uint16`；随后现价、均价各 4 字节 `float32`，
+		// 成交量 4 字节`uint32`；条目末尾 4 字节为填充区。
 		minutes := binary.LittleEndian.Uint16(data[pos : pos+2])
 		// 分钟数换算为 `HH:MM`；对 24 取模以兼容跨日溢出。
 		obj.reply.List = append(obj.reply.List, ExTickChartData{
@@ -122,24 +132,27 @@ type ExGetHistoryTickChart struct {
 
 // ExGetHistoryTickChartRequest 保存历史分时图查询的日期、市场类别与证券代码参数。
 type ExGetHistoryTickChartRequest struct {
-	Date     uint32   // 待查询日期编号。
+	Date     uint32   // 待查询日期编号，`uint32`，按 `YYYYMMDD` 编码。
 	Category uint8    // 市场类别。
-	Code     [23]byte // 证券代码。
-	Reserved [6]byte  // 保留字段。
-	Unknown  uint16   // 未知字段，语义待确认。
+	Code     [23]byte // 证券代码，GBK 定长 23 字节，不足补零。
+	Reserved [6]byte  // 6 字节保留填充区，发送时置零，语义待确认。
+	Unknown  uint16   // 未知字段，`uint16`，语义待确认。
 }
 
 // ExGetHistoryTickChartReply 保存解码完成的历史分时图响应结果。
 type ExGetHistoryTickChartReply struct {
-	Category uint8             // 市场类别。
-	Name     string            // 证券名称。
-	Date     string            // 交易日期。
-	AvgPrice float64           // 当日均价。
-	Count    uint16            // 返回分钟点数。
-	List     []ExTickChartData // 分时数据列表。
+	Category uint8             // 回显市场类别。
+	Name     string            // 证券名称，GBK 解码。
+	Date     string            // 交易日期，格式为 `YYYY-MM-DD`。
+	AvgPrice float64           // 当日均价，由 `float32` 还原，单位元。
+	Count    uint16            // 返回分钟点数，`uint16`。
+	List     []ExTickChartData // 解码出的分时数据列表。
 }
 
-// NewExGetHistoryTickChart 构造历史分时图查询协议实例；传入非空请求时覆盖默认参数。
+// NewExGetHistoryTickChart 构造历史分时图查询协议实例。
+//
+// 参数 `req` 指定查询日期、市场类别与证券代码；传入非空对象时覆盖默认参数，传 `nil` 时使用空
+// 请求。返回的实例零值不可直接使用。
 func NewExGetHistoryTickChart(req *ExGetHistoryTickChartRequest) *ExGetHistoryTickChart {
 	obj := &ExGetHistoryTickChart{
 		reqHeader:  new(ReqHeader),
@@ -161,19 +174,26 @@ func (obj *ExGetHistoryTickChart) applyRequest(req *ExGetHistoryTickChartRequest
 	obj.request = req
 }
 
-// BuildRequest 把当前请求参数编码为可发送的扩展协议字节流；序列化失败时返回非空错误。
+// BuildRequest 把当前请求参数编码为可发送的扩展协议字节流。
+//
+// 返回值第一项为编码后的请求字节流；参数序列化失败时第二项返回非空错误。
 func (obj *ExGetHistoryTickChart) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
+	// 请求体定长序列化，字段顺序与服务端约定一致。
 	if err := binary.Write(payload, binary.LittleEndian, obj.request); err != nil {
 		return nil, err
 	}
 	return buildExRequest(KMSG_EXHISTORYTICKCHART, payload.Bytes())
 }
 
-// ParseResponse 从服务端响应字节流解码历史分时数据并填充响应；响应长度不足或分钟点越界时返回非空错误。
+// ParseResponse 从服务端响应字节流解码历史分时数据并填充响应。
+//
+// 参数 `header` 为协议响应头，`data` 为服务端返回的原始响应字节流；头部不足 42 字节或分钟点越界时
+// 返回非空错误，解码成功返回 `nil`。
 func (obj *ExGetHistoryTickChart) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
-	// 头部至少需要 42 字节。
+	// 头部至少需要 42 字节：类别 1、名称 23 字节 GBK、日期 4 字节`uint32`、
+	// 均价 4 字节 `float32`、填充区与条数 2 字节`uint16`。
 	if len(data) < 42 {
 		return fmt.Errorf("invalid ex history tick chart response length: %d", len(data))
 	}
@@ -220,22 +240,25 @@ type ExGetChartSampling struct {
 
 // ExGetChartSamplingRequest 保存图表采样查询的市场类别、代码与采样点数参数。
 type ExGetChartSamplingRequest struct {
-	Category uint16   // 市场类别。
-	Code     [22]byte // 证券代码。
-	One      uint16   // 协议保留开关，语义待确认。
-	Count    uint16   // 请求采样点数。
-	Reserved [9]byte  // 保留字段。
+	Category uint16   // 市场类别，`uint16`。
+	Code     [22]byte // 证券代码，GBK 定长 22 字节，不足补零。
+	One      uint16   // 协议保留开关，`uint16`，传 0 时构造器补默认值 1，语义待确认。
+	Count    uint16   // 请求采样点数，`uint16`，传 0 时构造器补默认值 20。
+	Reserved [9]byte  // 9 字节保留填充区，发送时置零，语义待确认。
 }
 
 // ExGetChartSamplingReply 保存解码完成的采样价格序列响应结果。
 type ExGetChartSamplingReply struct {
-	Category uint16    // 市场类别。
-	Code     string    // 证券代码。
-	Count    uint16    // 采样点数。
-	Prices   []float64 // 采样价格序列。
+	Category uint16    // 回显市场类别，`uint16`。
+	Code     string    // 证券代码，GBK 解码。
+	Count    uint16    // 采样点数，`uint16`。
+	Prices   []float64 // 解码出的采样价格序列，单位元，按采样顺序排列。
 }
 
-// NewExGetChartSampling 构造图表采样查询协议实例；未指定开关与点数时默认开启采样并请求 20 个点。
+// NewExGetChartSampling 构造图表采样查询协议实例。
+//
+// 参数 `req` 指定市场类别、证券代码、开关与采样点数；传入非空对象时覆盖默认参数，传 `nil` 时使用
+// 默认开关 1、采样点数 20。返回的实例零值不可直接使用。
 func NewExGetChartSampling(req *ExGetChartSamplingRequest) *ExGetChartSampling {
 	obj := &ExGetChartSampling{
 		reqHeader:  new(ReqHeader),
@@ -265,19 +288,25 @@ func (obj *ExGetChartSampling) applyRequest(req *ExGetChartSamplingRequest) {
 	obj.request = req
 }
 
-// BuildRequest 把当前请求参数编码为可发送的扩展协议字节流；序列化失败时返回非空错误。
+// BuildRequest 把当前请求参数编码为可发送的扩展协议字节流。
+//
+// 返回值第一项为编码后的请求字节流；参数序列化失败时第二项返回非空错误。
 func (obj *ExGetChartSampling) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
+	// 请求体定长序列化，字段顺序与服务端约定一致。
 	if err := binary.Write(payload, binary.LittleEndian, obj.request); err != nil {
 		return nil, err
 	}
 	return buildExRequest(KMSG_EXCHARTSAMPLING, payload.Bytes())
 }
 
-// ParseResponse 从服务端响应字节流解码采样价格序列并填充响应；响应长度不足或采样点越界时返回非空错误。
+// ParseResponse 从服务端响应字节流解码采样价格序列并填充响应。
+//
+// 参数 `header` 为协议响应头，`data` 为服务端返回的原始响应字节流；响应长度不足或采样点越界时
+// 返回非空错误，解码成功返回 `nil`。
 func (obj *ExGetChartSampling) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
-	// 头部至少需要 42 字节。
+	// 头部至少需要 42 字节：类别 2 字节、代码 22 字节 GBK、填充区与条数 2 字节。
 	if len(data) < 42 {
 		return fmt.Errorf("invalid ex chart sampling response length: %d", len(data))
 	}
@@ -289,7 +318,7 @@ func (obj *ExGetChartSampling) ParseResponse(header *RespHeader, data []byte) er
 	pos := 42
 
 	for i := uint16(0); i < obj.reply.Count; i++ {
-		// 每个采样点 4 字节，先校验剩余长度防止越界。
+		// 每个采样点为 4 字节 `float32`，先校验剩余长度防止越界。
 		if pos+4 > len(data) {
 			return fmt.Errorf("invalid ex chart sampling item %d", i)
 		}

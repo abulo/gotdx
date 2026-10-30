@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
-	// 从偏移 0 开始查询深市 000001 最近 20 笔逐笔成交。
+	// `market` 取 `types.MarketSZ`（深市），代码 `000001`；`start=0` 为起始成交序号（分页偏移，从 0 开始）；
+	// `count=20` 为期望成交条数上限，传 0 时由协议使用默认上限；查询最新交易日的逐笔成交明细。
 	items, err := client.MACTransactions(types.MarketSZ.Uint8(), "000001", 0, 20)
 	if err != nil {
 		log.Fatalln(err)

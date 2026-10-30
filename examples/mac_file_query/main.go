@@ -14,14 +14,16 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
-	// 第一步：获取文件元信息，作为后续下载大小的依据。
+	// 第一步：查询文件元信息。`filename` 为协议文件名 `StockInfo.dat`，内部按定长 70 字节字段填充；
+	// `offset` 为协议起始偏移，此处传 0；返回的 `Size` 作为后续下载的总大小上限。
 	meta, err := client.MACFileList("StockInfo.dat", 0)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	log.Printf("mac_file_list offset=%d size=%d flag=%d hash=%s", meta.Offset, meta.Size, meta.Flag, meta.Hash)
 
-	// 第二步：按文件序号 1 与元信息大小循环下载完整文件。
+	// 第二步：`index` 为文件分片序号，协议从 1 开始；`size` 直接取上一步元信息中的大小；接口按固定
+	// 块大小循环下载，服务器返回空块或达到大小上限时结束。
 	content, err := client.MACDownloadFullFile("StockInfo.dat", 1, meta.Size)
 	if err != nil {
 		log.Fatalln(err)

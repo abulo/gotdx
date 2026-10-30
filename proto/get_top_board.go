@@ -21,35 +21,39 @@ type GetTopBoard struct {
 
 // GetTopBoardRequest 是 GetTopBoard 排行榜查询使用的请求参数。
 type GetTopBoardRequest struct {
-	Category uint8   // 板块或市场分类。
-	Mode     uint8   // 协议模式位；为 0 时默认 5。
-	Reserved [7]byte // 协议保留字段。
-	Size     uint8   // 每个榜单返回的条目数；为 0 时默认 20。
+	Category uint8   // 板块或市场分类，1 字节无符号整数。
+	Mode     uint8   // 协议模式位，1 字节无符号整数；为 0 时默认取 5。
+	Reserved [7]byte // 7 字节定长协议保留区，按预置字节填充。
+	Size     uint8   // 每个榜单返回的条目数，1 字节无符号整数；为 0 时默认取 20。
 }
 
 // GetTopBoardReply 是 GetTopBoard 排行榜查询解析完成后的响应数据，按榜单维度分组存放条目。
 type GetTopBoardReply struct {
-	Size               uint8          // 每个榜单的条目数。
-	Increase           []TopBoardItem // 涨幅榜。
-	Decrease           []TopBoardItem // 跌幅榜。
-	Amplitude          []TopBoardItem // 振幅榜。
-	RiseSpeed          []TopBoardItem // 涨速榜。
-	FallSpeed          []TopBoardItem // 跌速榜。
-	VolRatio           []TopBoardItem // 量比榜。
+	Size               uint8          // 每个榜单的条目数，1 字节无符号整数。
+	Increase           []TopBoardItem // 涨幅榜条目，按涨幅由高到低排列。
+	Decrease           []TopBoardItem // 跌幅榜条目，按跌幅由高到低排列。
+	Amplitude          []TopBoardItem // 振幅榜条目。
+	RiseSpeed          []TopBoardItem // 涨速榜条目。
+	FallSpeed          []TopBoardItem // 跌速榜条目。
+	VolRatio           []TopBoardItem // 量比榜条目。
 	PosCommissionRatio []TopBoardItem // 正委比榜，即买盘占优榜单。
 	NegCommissionRatio []TopBoardItem // 负委比榜，即卖盘占优榜单。
-	Turnover           []TopBoardItem // 换手率榜。
+	Turnover           []TopBoardItem // 换手率榜条目。
 }
 
 // TopBoardItem 表示排行榜中的一只证券及其上榜指标值。
 type TopBoardItem struct {
-	Market uint8   // 市场代码。
-	Code   string  // 证券代码。
-	Price  float64 // 当前价，单位为元。
-	Value  float64 // 上榜指标值，具体口径随榜单维度变化，语义待确认。
+	Market uint8   // 市场代码，1 字节无符号整数。
+	Code   string  // 6 字节定长证券代码，按 `GBK` 还原。
+	Price  float64 // 当前价，单位为元，4 字节的单精度浮点数。
+	Value  float64 // 上榜指标值，4 字节的单精度浮点数；口径随榜单维度变化，语义待确认。
 }
 
-// NewGetTopBoard 构造排行榜查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 BuildRequest 与 ParseResponse。
+// NewGetTopBoard 构造排行榜查询对象。
+//
+// 参数 `req` 指定分类 `Category`、模式位 `Mode` 与每榜条目数 `Size`；`Mode` 为 0
+// 时默认 5、`Size` 为 0 时默认 20；`req` 为 `nil` 时使用空请求参数。返回的对象
+// 可直接调用 `BuildRequest` 与 `ParseResponse`。
 func NewGetTopBoard(req *GetTopBoardRequest) *GetTopBoard {
 	obj := new(GetTopBoard)
 	obj.reqHeader = new(ReqHeader)
@@ -84,8 +88,12 @@ func (obj *GetTopBoard) applyRequest(req *GetTopBoardRequest) {
 	obj.request = req
 }
 
-// BuildRequest 按小端序将请求头与请求参数编码为完整协议报文；缓冲区写入失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为完整协议报文。
+//
+// 返回的字节切片可直接写入连接；`PkgLen1` 与 `PkgLen2` 双写为同一负载长度，
+// 缓冲区写入失败时返回错误。
 func (obj *GetTopBoard) BuildRequest() ([]byte, error) {
+	// 请求参数固定 12 字节（分类 1 + 模式 1 + 保留 7 + 条数 1 + 对齐填充），包头长度双写为 0x0c。
 	obj.reqHeader.PkgLen1 = 0x0c
 	obj.reqHeader.PkgLen2 = 0x0c
 
@@ -95,7 +103,10 @@ func (obj *GetTopBoard) BuildRequest() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// ParseResponse 按榜单顺序解析服务端返回的排行榜报文并填充响应对象；记录越界时返回错误。
+// ParseResponse 按榜单顺序解析服务端返回的排行榜报文并填充响应对象。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节；记录越界时返回
+// `io.ErrUnexpectedEOF`。
 func (obj *GetTopBoard) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 
@@ -124,7 +135,7 @@ func (obj *GetTopBoard) ParseResponse(header *RespHeader, data []byte) error {
 			if pos+15 > len(data) {
 				return io.ErrUnexpectedEOF
 			}
-			// 价格与指标值均为 4 字节小端序单精度浮点数。
+			// 价格与指标值均为 4 字节的单精度浮点数。
 			item := TopBoardItem{
 				Market: data[pos],
 				Code:   Utf8ToGbk(data[pos+1 : pos+7]),
@@ -139,7 +150,7 @@ func (obj *GetTopBoard) ParseResponse(header *RespHeader, data []byte) error {
 	return nil
 }
 
-// Response 返回已解析完成的排行榜响应数据；未调用 ParseResponse 时返回空响应对象。
+// Response 返回已解析完成的排行榜响应数据；未调用 `ParseResponse` 时返回空响应对象。
 func (obj *GetTopBoard) Response() *GetTopBoardReply {
 	return obj.reply
 }

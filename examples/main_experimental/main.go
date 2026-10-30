@@ -14,7 +14,9 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 闭包 `run` 统一执行一次试验协议调用：失败时打印错误；成功时打印应答长度与截断后的原始十六进制预览。
+	// 闭包 `run` 统一执行一次试验协议调用。参数 `name` 为日志中展示的协议名称；参数 `call` 为无业务入参、
+	// 返回原始应答与错误的协议闭包。调用失败时仅打印错误；成功时打印应答长度，并用 `PreviewHex` 把原始
+	// 十六进制数据截断到 120 个字符后预览。
 	run := func(name string, call func() (*proto.RawDataReply, error)) {
 		reply, err := call()
 		if err != nil {

@@ -11,35 +11,36 @@ import (
 
 // HostInfo 表示一条内置通达信行情服务器条目，包含站点名称、IP 地址与端口。
 //
-// 该结构体零值可直接使用；各站点列表函数返回的是内置列表的副本，调用方修改返回切片
-// 不会影响内置数据。
+// 该结构体为纯值类型，零值对应名称、IP 为空串、端口为 0；各站点列表函数返回的是内置
+// 列表的浅拷贝，调用方修改返回切片或其中条目不会影响内置数据。
 type HostInfo struct {
-	Name string `json:"name"` // 站点显示名称
-	IP   string `json:"ip"`   // 服务器 IP 地址
-	Port int    `json:"port"` // 服务器端口
+	Name string `json:"name"` // 站点显示名称，用于界面展示与探测结果标注
+	IP   string `json:"ip"`   // 服务器 IPv4 或主机名，连接层直接用于拨号
+	Port int    `json:"port"` // 服务器端口号，取值范围 0 至 65535
 }
 
-// Address 返回客户端连接层使用的 `host:port` 形式地址。
+// Address 返回客户端连接层使用的 `host:port` 形式地址，由 `net.JoinHostPort` 拼接，
+// 自动处理 IPv6 场景所需的方括号包裹。
 func (h HostInfo) Address() string {
 	return net.JoinHostPort(h.IP, strconv.Itoa(h.Port))
 }
 
 // HostProbeResult 记录一次 TCP 拨号探测的结果。
 //
-// 当 `Reachable` 为 `true` 时 `Latency` 为本次拨号测得的往返耗时；当 `Reachable` 为 `false` 时
-// `Latency` 无意义，`Error` 保存拨号失败原因的文本描述。
+// 当 `Reachable` 为 `true` 时 `Latency` 为本次拨号测得的往返耗时；当 `Reachable` 为 `false`
+// 时 `Latency` 无意义，`Error` 保存拨号失败原因的文本描述。零值表示未探测或不可达。
 type HostProbeResult struct {
-	Name      string        `json:"name"`            // 站点显示名称，未知站点为空
-	IP        string        `json:"ip"`              // 服务器 IP 地址
-	Port      int           `json:"port"`            // 服务器端口
-	Address   string        `json:"address"`         // `host:port` 形式地址
-	Latency   time.Duration `json:"latency"`         // 拨号往返耗时，仅可达时有效
-	Reachable bool          `json:"reachable"`       // 是否拨号成功
-	Error     string        `json:"error,omitempty"` // 拨号失败原因，成功时为空
+	Name      string        `json:"name"`            // 站点显示名称，地址无法回填名称时为空串
+	IP        string        `json:"ip"`              // 服务器 IP 地址或主机名
+	Port      int           `json:"port"`            // 服务器端口号；端口解析失败时保持 0
+	Address   string        `json:"address"`         // `host:port` 形式地址，原样来自探测输入
+	Latency   time.Duration `json:"latency"`         // 拨号往返耗时，仅 `Reachable` 为 `true` 时有效
+	Reachable bool          `json:"reachable"`       // 是否 TCP 拨号成功
+	Error     string        `json:"error,omitempty"` // 拨号或地址解析失败原因，成功时为空串
 }
 
-// ErrNoReachableHosts 表示本次探测的所有主机 TCP 拨号均失败；
-// 由 FastestHost、FastestAddress 在没有任何可达节点时返回。
+// ErrNoReachableHosts 表示本次探测的所有主机 TCP 拨号均失败，没有任何可达节点；
+// 由 `FastestHost`、`FastestAddress` 在筛选最快主机时返回。
 var ErrNoReachableHosts = errors.New("no reachable hosts")
 
 var mainHostList = []HostInfo{
@@ -165,68 +166,84 @@ var icfqsHostList = []HostInfo{
 	{Name: "华为广州均衡5", IP: "124.71.105.217", Port: 7615},
 }
 
-// MainHosts 返回内置主行情服务器列表的副本。
+// MainHosts 返回内置主行情服务器列表的浅拷贝；该组站点用于主站 A 股行情协议，默认端口
+// 7709，调用方修改返回切片不会影响内置列表。
 func MainHosts() []HostInfo {
 	return cloneHosts(mainHostList)
 }
 
-// BrokerHosts 返回内置券商行情服务器列表的副本。
+// BrokerHosts 返回内置券商行情服务器列表的浅拷贝；该组站点为券商与上证云接入地址，
+// 调用方修改返回切片不会影响内置列表。
 func BrokerHosts() []HostInfo {
 	return cloneHosts(brokerHostList)
 }
 
-// ExHosts 返回内置扩展行情服务器列表的副本。
+// ExHosts 返回内置扩展行情服务器列表的浅拷贝；该组站点用于期货、港股、美股等扩展行情
+// 协议，默认端口 7727，调用方修改返回切片不会影响内置列表。
 func ExHosts() []HostInfo {
 	return cloneHosts(exHostList)
 }
 
-// MACHosts 返回内置 MAC 主行情服务器列表的副本。
+// MACHosts 返回内置 MAC 主行情服务器列表的浅拷贝；该组站点用于 MAC 主站协议，
+// 调用方修改返回切片不会影响内置列表。
 func MACHosts() []HostInfo {
 	return cloneHosts(macHostList)
 }
 
-// MACExHosts 返回内置 MAC 扩展行情服务器列表的副本。
+// MACExHosts 返回内置 MAC 扩展行情服务器列表的浅拷贝；该组站点用于 MAC 扩展行情协议，
+// 调用方修改返回切片不会影响内置列表。
 func MACExHosts() []HostInfo {
 	return cloneHosts(macExHostList)
 }
 
-// ICFQSHosts 返回内置 ICFQS 资讯行情服务器列表的副本。
+// ICFQSHosts 返回内置 ICFQS 资讯行情服务器列表的浅拷贝；该组站点用于资讯行情协议，
+// 默认端口 7615，调用方修改返回切片不会影响内置列表。
 func ICFQSHosts() []HostInfo {
 	return cloneHosts(icfqsHostList)
 }
 
-// MainHostAddresses 返回内置主行情服务器的 `host:port` 地址列表副本。
+// MainHostAddresses 返回内置主行情服务器的 `host:port` 地址列表副本；列表顺序与 `MainHosts`
+// 一致，返回切片可由调用方自由修改。
 func MainHostAddresses() []string {
 	return hostAddresses(mainHostList)
 }
 
-// BrokerHostAddresses 返回内置券商服务器的 `host:port` 地址列表副本。
+// BrokerHostAddresses 返回内置券商服务器的 `host:port` 地址列表副本；列表顺序与
+// `BrokerHosts` 一致，返回切片可由调用方自由修改。
 func BrokerHostAddresses() []string {
 	return hostAddresses(brokerHostList)
 }
 
-// ExHostAddresses 返回内置扩展行情服务器的 `host:port` 地址列表副本。
+// ExHostAddresses 返回内置扩展行情服务器的 `host:port` 地址列表副本；列表顺序与 `ExHosts`
+// 一致，返回切片可由调用方自由修改。
 func ExHostAddresses() []string {
 	return hostAddresses(exHostList)
 }
 
-// MACHostAddresses 返回内置 MAC 主行情服务器的 `host:port` 地址列表副本。
+// MACHostAddresses 返回内置 MAC 主行情服务器的 `host:port` 地址列表副本；列表顺序与
+// `MACHosts` 一致，返回切片可由调用方自由修改。
 func MACHostAddresses() []string {
 	return hostAddresses(macHostList)
 }
 
-// MACExHostAddresses 返回内置 MAC 扩展行情服务器的 `host:port` 地址列表副本。
+// MACExHostAddresses 返回内置 MAC 扩展行情服务器的 `host:port` 地址列表副本；列表顺序与
+// `MACExHosts` 一致，返回切片可由调用方自由修改。
 func MACExHostAddresses() []string {
 	return hostAddresses(macExHostList)
 }
 
-// ICFQSHostAddresses 返回内置 ICFQS 资讯行情服务器的 `host:port` 地址列表副本。
+// ICFQSHostAddresses 返回内置 ICFQS 资讯行情服务器的 `host:port` 地址列表副本；列表顺序与
+// `ICFQSHosts` 一致，返回切片可由调用方自由修改。
 func ICFQSHostAddresses() []string {
 	return hostAddresses(icfqsHostList)
 }
 
-// ProbeHosts 并发对给定主机条目逐一发起 TCP 拨号探测，返回按可达性优先、
-// 同可达时按延迟从低到高排序的探测结果；`timeout` 为非正数时使用内置默认超时。
+// ProbeHosts 并发对给定主机条目逐一发起 TCP 拨号探测，返回探测结果切片。
+//
+// `hosts` 为待探测主机条目；`timeout` 为单次拨号超时时间，传非正数时回退到内置默认超时
+// （8 秒）。返回结果先按可达性排序（可达条目在前），同为可达时再按往返延迟从低到高排序，
+// 延迟相同按名称、地址字典序兜底；输入为空切片时返回空切片。探测不返回错误，失败原因记录
+// 在各结果条目的 `Error` 字段中。
 func ProbeHosts(hosts []HostInfo, timeout time.Duration) []HostProbeResult {
 	results := probeAddressesWithDial(hostAddresses(hosts), timeout, net.DialTimeout)
 	names := make(map[string]HostInfo, len(hosts))
@@ -243,30 +260,41 @@ func ProbeHosts(hosts []HostInfo, timeout time.Duration) []HostProbeResult {
 	return results
 }
 
-// ProbeAddresses 并发对给定 `host:port` 地址列表逐一发起 TCP 拨号探测，
-// 返回按可达性优先、同可达时按延迟从低到高排序的探测结果；`timeout` 为非正数时使用内置默认超时。
+// ProbeAddresses 并发对给定 `host:port` 地址列表逐一发起 TCP 拨号探测，返回探测结果切片。
+//
+// `addresses` 为待探测地址，格式由 `net.SplitHostPort` 解析；`timeout` 为单次拨号超时时间，
+// 传非正数时回退到内置默认超时（8 秒）。排序规则同 `ProbeHosts`；输入为空切片时返回空切片。
+// 探测不返回错误，失败原因记录在各结果条目的 `Error` 字段中。
 func ProbeAddresses(addresses []string, timeout time.Duration) []HostProbeResult {
 	return probeAddressesWithDial(addresses, timeout, net.DialTimeout)
 }
 
-// FastestHost 返回探测结果中延迟最低的可达主机条目；全部主机不可达时返回
-// 零值结果与 ErrNoReachableHosts。
+// FastestHost 返回探测结果中延迟最低的可达主机条目。
+//
+// `hosts` 与 `timeout` 的含义同 `ProbeHosts`；探测完成后取排序结果里第一个可达条目。全部主机
+// 不可达时返回零值 `HostProbeResult` 与 `ErrNoReachableHosts`。
 func FastestHost(hosts []HostInfo, timeout time.Duration) (HostProbeResult, error) {
 	return fastestProbeResult(ProbeHosts(hosts, timeout))
 }
 
-// FastestAddress 返回给定地址列表中延迟最低的可达地址；全部地址不可达时返回
-// 零值结果与 ErrNoReachableHosts。
+// FastestAddress 返回给定地址列表中延迟最低的可达地址。
+//
+// `addresses` 与 `timeout` 的含义同 `ProbeAddresses`。全部地址不可达时返回零值
+// `HostProbeResult` 与 `ErrNoReachableHosts`。
 func FastestAddress(addresses []string, timeout time.Duration) (HostProbeResult, error) {
 	return fastestProbeResult(ProbeAddresses(addresses, timeout))
 }
 
-// cloneHosts 返回主机切片的浅拷贝，避免调用方改动内置列表。
+// cloneHosts 返回主机切片的浅拷贝；元素为值类型，拷贝后调用方增删或修改切片长度不会影响
+// 内置列表。
+//
+// `hosts` 为待拷贝主机切片；输入为 `nil` 时返回非 `nil` 的空切片。
 func cloneHosts(hosts []HostInfo) []HostInfo {
 	return append([]HostInfo(nil), hosts...)
 }
 
-// hostAddresses 将主机条目列表转换为 `host:port` 地址切片。
+// hostAddresses 将主机条目列表转换为 `host:port` 地址切片，顺序与输入一致；输入为空时
+// 返回非 `nil` 的空切片。
 func hostAddresses(hosts []HostInfo) []string {
 	addresses := make([]string, 0, len(hosts))
 	for _, host := range hosts {
@@ -275,8 +303,11 @@ func hostAddresses(hosts []HostInfo) []string {
 	return addresses
 }
 
-// defaultAddressAndPool 从地址列表中拆分出首个地址作为主地址、其余作为候选池；
-// 列表为空时使用兜底地址并返回空候选池。
+// defaultAddressAndPool 从地址列表中拆分出主地址与候选池：首个地址作为主地址，其余地址
+// 作为候选池。
+//
+// `addresses` 为输入地址列表；`fallback` 为列表为空时使用的兜底主地址。列表为空时返回
+// `fallback` 与 `nil` 候选池；非空时候选池为输入尾部地址的浅拷贝。
 func defaultAddressAndPool(addresses []string, fallback string) (string, []string) {
 	if len(addresses) == 0 {
 		return fallback, nil
@@ -284,8 +315,11 @@ func defaultAddressAndPool(addresses []string, fallback string) (string, []strin
 	return addresses[0], append([]string(nil), addresses[1:]...)
 }
 
-// probeAddressesWithDial 并发拨号探测地址列表；`dial` 抽象拨号函数以便测试替换，
-// 结果先由互斥锁收集，探测结束后统一按可达性、延迟、名称、地址排序。
+// probeAddressesWithDial 并发拨号探测地址列表，组装排序后的探测结果。
+//
+// `addresses` 为待探测 `host:port` 地址；`timeout` 为拨号超时，非正数回退默认 8 秒；`dial`
+// 为可替换的拨号函数，便于测试时注入假拨号实现。各 `goroutine` 先通过互斥锁收集结果，探测
+// 结束后统一按可达性、延迟、名称、地址排序返回。
 func probeAddressesWithDial(addresses []string, timeout time.Duration, dial func(network, address string, timeout time.Duration) (net.Conn, error)) []HostProbeResult {
 	if timeout <= 0 {
 		timeout = time.Duration(_defaultTimeoutSec) * time.Second
@@ -298,6 +332,7 @@ func probeAddressesWithDial(addresses []string, timeout time.Duration, dial func
 	)
 
 	for _, address := range addresses {
+		// 循环变量在闭包内按当前取值捕获，避免所有 `goroutine` 读到同一地址。
 		address := address
 		wg.Add(1)
 		go func() {
@@ -311,6 +346,7 @@ func probeAddressesWithDial(addresses []string, timeout time.Duration, dial func
 			} else {
 				result.Reachable = true
 				result.Latency = time.Since(started)
+				// 拨号仅用于探测可达性，拿到连接后立即关闭，不保留探测连接。
 				_ = conn.Close()
 			}
 
@@ -337,8 +373,10 @@ func probeAddressesWithDial(addresses []string, timeout time.Duration, dial func
 	return results
 }
 
-// fastestProbeResult 在已排序的探测结果中取第一个可达条目；没有可达条目时返回
-// ErrNoReachableHosts。
+// fastestProbeResult 在已按可达性与延迟排序的探测结果中取第一个可达条目；没有可达条目时
+// 返回零值结果与 `ErrNoReachableHosts`。
+//
+// `results` 为已排序的探测结果切片；切片为空或全部不可达时返回零值结果与错误。
 func fastestProbeResult(results []HostProbeResult) (HostProbeResult, error) {
 	for _, result := range results {
 		if result.Reachable {
@@ -348,8 +386,10 @@ func fastestProbeResult(results []HostProbeResult) (HostProbeResult, error) {
 	return HostProbeResult{}, ErrNoReachableHosts
 }
 
-// hostProbeFromAddress 预先从 `host:port` 地址解析出 IP 与端口；格式非法时把
-// 解析错误记录到结果的 `Error` 字段，拨号阶段不会重复报错。
+// hostProbeFromAddress 预先从 `host:port` 地址解析出 IP 与端口，作为探测结果的初始状态。
+//
+// `address` 为待解析地址；格式非法或端口不是十进制数字时，把解析错误记录到结果的 `Error`
+// 字段，拨号阶段据此直接标记不可达，不会重复报错。端口解析失败时 `Port` 保持 0。
 func hostProbeFromAddress(address string) HostProbeResult {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {

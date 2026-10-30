@@ -14,7 +14,9 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
-	// 查询深市 000001 的日 K 线，从偏移 0 开始取 10 根，不做复权处理。
+	// `market` 取 `types.MarketSZ`（深市），代码 `000001`；`period` 取 `types.KLINE_TYPE_DAILY`（日 K）；
+	// `times=1` 为周期倍数（传 0 时按 1 处理）；`start=0` 为起始偏移条数；`count=10` 为请求条数；
+	// `adjust` 取 `types.AdjustNone` 表示不复权。
 	items, err := client.MACSymbolBars(types.MarketSZ.Uint8(), "000001", types.KLINE_TYPE_DAILY, 1, 0, 10, types.AdjustNone)
 	if err != nil {
 		log.Fatalln(err)

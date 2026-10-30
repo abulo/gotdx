@@ -14,7 +14,7 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 从偏移 0 开始取深市 20 条证券列表。
+	// `market` 取 `types.MarketSZ`（深市）；`start=0` 为起始偏移序号（从 0 开始），`count=20` 为本页请求条数。
 	items, err := client.StockList(types.MarketSZ.Uint8(), 0, 20)
 	if err != nil {
 		log.Fatalln(err)

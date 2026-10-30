@@ -14,7 +14,7 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
-	// 查询深市证券 000001 归属的全部板块。
+	// 注意该接口入参顺序为代码在前、市场在后：`symbol=000001`，`market` 取 `types.MarketSZ`（深市），返回所属板块列表。
 	items, err := client.MACSymbolBelongBoard("000001", types.MarketSZ.Uint8())
 	if err != nil {
 		log.Fatalln(err)

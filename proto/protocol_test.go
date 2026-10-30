@@ -41,8 +41,9 @@ func TestSeqIDConcurrent(t *testing.T) {
 	}
 }
 
-// encodePrice 按通达信价格变长编码规则将整数价格编码为小端变长字节；
-// 负号由首字节的符号标志位承载，后续字节高位为 1 表示仍有续字节。
+// encodePrice 将整数价格按通达信变长编码规则编码为变长字节。
+// 参数 `value` 为待编码的整数价格，允许负数；负号由首字节 `0x40` 标志位承载，
+// 后续字节最高位为 1 表示仍有续字节；返回编码后的字节切片，不产生错误。
 func encodePrice(value int) []byte {
 	sign := value < 0
 	if sign {
@@ -71,8 +72,9 @@ func encodePrice(value int) []byte {
 	return out
 }
 
-// encodeVolumeProfilePriceDelta 按资金分布价格差编码规则将 `int32` 编码为变长字节，
-// 该编码不携带独立的负号标志位。
+// encodeVolumeProfilePriceDelta 将资金分布价格差按无符号变长规则编码为字节。
+// 参数 `value` 为待编码的 `int32` 差值；该编码不携带独立负号标志位，
+// 负数先按位模式转无符号再编码；返回编码后的字节切片，不产生错误。
 func encodeVolumeProfilePriceDelta(value int32) []byte {
 	u := uint32(value)
 	first := byte(u & 0x3f)
@@ -94,7 +96,9 @@ func encodeVolumeProfilePriceDelta(value int32) []byte {
 	return out
 }
 
-// mustBuildRequest 调用消息的 `BuildRequest` 生成请求报文，构造失败立即终止测试。
+// mustBuildRequest 调用消息的 `BuildRequest` 生成请求报文。
+// 参数 `msg` 为待构造的协议消息；返回生成的原始报文字节切片；
+// 构造失败时通过 `t` 调用 `Fatalf` 终止测试。
 func mustBuildRequest(t *testing.T, msg RequestBuilder) []byte {
 	t.Helper()
 	raw, err := msg.BuildRequest()
@@ -104,7 +108,9 @@ func mustBuildRequest(t *testing.T, msg RequestBuilder) []byte {
 	return raw
 }
 
-// readReqHeader 读取标准协议请求报文前 12 字节头部，解码失败立即终止测试。
+// readReqHeader 解析标准协议请求报文头部。
+// 参数 `raw` 为完整请求报文，仅取前 12 字节解码为 `ReqHeader`；
+// 返回解码后的头部；字节不足或解码失败时通过 `t` 调用 `Fatalf` 终止测试。
 func readReqHeader(t *testing.T, raw []byte) ReqHeader {
 	t.Helper()
 	var header ReqHeader
@@ -398,7 +404,7 @@ func TestGetHistoryMinuteTimeDataParseResponseTruncatedVarint(t *testing.T) {
 	if err := binary.Write(buf, binary.LittleEndian, uint32(0)); err != nil {
 		t.Fatal(err)
 	}
-	// 变长字段以续位 0x80 开头但无后续字节，直接越界。
+	// 变长字段以续位 `0x80` 开头但无后续字节，直接越界。
 	buf.Write([]byte{0x80})
 
 	if err := msg.ParseResponse(&RespHeader{}, buf.Bytes()); err == nil {
@@ -1333,6 +1339,8 @@ func TestGetCompanyCategoryTrimsFixedStringGarbage(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 每条记录固定 152 字节：前 64 字节分类名称、后 80 字节文件名；
+	// 两段均在 NUL 之后写入垃圾字节，验证定长解码器按 NUL 截断并去除尾部填充。
 	name := make([]byte, 64)
 	copy(name, []byte{0xd7, 0xca, 0xbd, 0xf0, 0xb6, 0xaf, 0xcf, 0xf2})
 	name[8] = 0x00
@@ -1586,8 +1594,8 @@ func TestDownloadFileBuildRequestAndParseResponse(t *testing.T) {
 
 func TestBaseUnitUsesHundredForShenZhenIndexPrefix(t *testing.T) {
 	cases := []struct {
-		code string
-		want float64
+		code string  // 证券代码
+		want float64 // 报价基准单位：100 为百分位（两位小数），1000 为千分位（三位小数）
 	}{
 		{code: "000001", want: 100},
 		{code: "600000", want: 100},

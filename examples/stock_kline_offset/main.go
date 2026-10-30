@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 查询深市 000001 日 K 线，从偏移 0 开始取 10 根，不做复权处理。
+	// `category` 取 `types.KLINE_TYPE_DAILY`（日 K）；`market` 取 `types.MarketSZ`（深市），代码 `000001`；
+	// `start=0` 为起始偏移条数，`count=10` 为请求条数；`times=1` 为周期倍数；`adjust` 取 `types.AdjustNone` 表示不复权。
 	items, err := client.StockKLineOffset(types.KLINE_TYPE_DAILY, types.MarketSZ.Uint8(), "000001", 0, 10, 1, types.AdjustNone)
 	if err != nil {
 		log.Fatalln(err)

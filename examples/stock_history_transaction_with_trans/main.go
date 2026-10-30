@@ -14,7 +14,9 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 查询 2026-04-10 深市 000001 的全部历史逐笔成交；下一行是分页取数版本，已注释仅作对照。
+	// 日期 `20260410` 为目标交易日，按 `YYYYMMDD` 打包成整数；市场 `types.MarketSZ`（深市），代码 `000001`。
+	// 全量版本自动按固定页大小向前翻页、新页前置保持时间顺序，合并返回该日全部带买卖方向的逐笔成交；
+	// 下一行是分页取数版本（`start=0` 起始成交序号、`count=20` 本页笔数），已注释仅作对照。
 	// items, err := client.StockHistoryTransactionWithTrans(20260410, types.MarketSZ.Uint8(), "000001", 0, 20)
 	items, err := client.StockHistoryFullTransactionWithTrans(20260410, types.MarketSZ.Uint8(), "000001")
 	if err != nil {

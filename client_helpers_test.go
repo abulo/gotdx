@@ -10,21 +10,25 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
-// executeGenericMethodProtocol 是 `execute` 泛型流程的最小协议桩：请求体固定为单字节，
+// executeGenericMethodProtocol 是 `execute` 泛型流程的最小协议桩：请求体长度固定为 1 字节，
 // 响应负载原样保存为应答字符串，用于在 `net.Pipe` 上走通一次收发流程。
 type executeGenericMethodProtocol struct {
-	reply string
+	reply string // 最近一次响应负载转成的应答字符串，供 `Response` 返回
 }
 
+// BuildRequest 返回固定的请求负载 `0x5a`；不携带业务参数，编码恒成功，错误返回 `nil`。
 func (*executeGenericMethodProtocol) BuildRequest() ([]byte, error) {
 	return []byte{0x5a}, nil
 }
 
+// ParseResponse 把响应负载原样转为字符串存入 `reply`；入参 `header` 本桩不使用，
+// 负载解码恒成功，错误返回 `nil`。
 func (p *executeGenericMethodProtocol) ParseResponse(_ *proto.RespHeader, payload []byte) error {
 	p.reply = string(payload)
 	return nil
 }
 
+// Response 返回最近一次保存的应答字符串。
 func (p *executeGenericMethodProtocol) Response() string {
 	return p.reply
 }

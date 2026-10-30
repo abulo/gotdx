@@ -14,14 +14,15 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 查询深市 000001 的 F10 资料打包，汇总章节、除权除息与财务信息。
+	// `market` 取 `types.MarketSZ`（深市），代码 `000001`；返回聚合信息包：章节拉取失败即报错，
+	// 除权除息与财务信息为尽力而为，缺失时对应字段保持 `nil` 或空切片。
 	f10, err := client.StockF10(types.MarketSZ.Uint8(), "000001")
 	if err != nil {
 		log.Fatalln(err)
 	}
 	log.Printf("sections=%d xdxr=%d finance_nil=%v", len(f10.Sections), len(f10.XDXR), f10.Finance == nil)
 
-	// 加载概念板块文件，解析为板块成分条目列表。
+	// `filename` 取 `types.BlockFileGN`（`block_gn.dat`，概念板块文件）；下载并解析为扁平化板块条目列表。
 	blocks, err := client.StockBlock(types.BlockFileGN)
 	if err != nil {
 		log.Fatalln(err)

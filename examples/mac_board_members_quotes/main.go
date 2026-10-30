@@ -14,7 +14,9 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
-	// 排序类型 14、排序顺序 1 的具体取值含义由协议常量定义，此处直接透传演示。
+	// 参数 `boardSymbol` 为板块 `880761`，`count` 为报价条目上限 20；`sortType` 传 14 即
+	// `MACSortChangePct`（按涨跌幅排序），`sortOrder` 传 1 即 `MACSortOrderDesc`（降序）；示例保持
+	// 原始数字透传演示。
 	items, err := client.MACBoardMembersQuotesWithSort("880761", 20, 14, 1)
 	if err != nil {
 		log.Fatalln(err)

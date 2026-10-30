@@ -22,27 +22,30 @@ type GetCompanyCategory struct {
 
 // GetCompanyCategoryRequest 是公司资料目录查询的请求参数。
 type GetCompanyCategoryRequest struct {
-	Market uint16  // 市场代码。
-	Code   [6]byte // 证券代码。
-	Zero   uint32  // 保留字段。
+	Market uint16  // 市场代码（2 字节），取值与行情协议市场枚举一致。
+	Code   [6]byte // 6 字节定长证券代码，尾部以零字节填充。
+	Zero   uint32  // 协议保留占位，发送时填 0，语义待确认。
 }
 
 // GetCompanyCategoryReply 是公司资料目录查询的响应数据。
 type GetCompanyCategoryReply struct {
-	Count      uint16            // 分类条目条数。
-	Categories []CompanyCategory // 资料分类列表。
+	Count      uint16            // 服务端返回的目录条目条数。
+	Categories []CompanyCategory // 解析后的资料分类列表。
 }
 
 // CompanyCategory 表示一个公司资料分类条目，包含名称、对应文件名及文件内偏移与长度；
 // 偏移与长度配合正文读取请求定位该分类在资料文件中的正文区间。
 type CompanyCategory struct {
-	Name     string // 分类名称。
-	Filename string // 资料文件名。
-	Start    uint32 // 内容起始偏移。
-	Length   uint32 // 内容长度。
+	Name     string // 分类名称，来自 64 字节定长 `GBK` 字段解码。
+	Filename string // 资料文件名，来自 80 字节定长 `GBK` 字段解码。
+	Start    uint32 // 正文在资料文件内的起始偏移（字节，4 字节）。
+	Length   uint32 // 正文字节长度（4 字节）。
 }
 
-// NewGetCompanyCategory 创建并初始化公司资料目录查询请求对象；传入参数为空时使用默认参数。
+// NewGetCompanyCategory 创建并初始化公司资料目录查询请求对象。
+//
+// 参数 `req` 携带 `Market` 市场代码与 `Code` 证券代码；传 `nil` 时仅初始化协议骨架。
+// 返回初始化完成、可直接调用 `BuildRequest` 的协议对象。
 func NewGetCompanyCategory(req *GetCompanyCategoryRequest) *GetCompanyCategory {
 	obj := new(GetCompanyCategory)
 	obj.reqHeader = new(ReqHeader)
@@ -64,12 +67,17 @@ func (obj *GetCompanyCategory) applyRequest(req *GetCompanyCategoryRequest) {
 	obj.request = req
 }
 
-// BuildRequest 将请求头与请求参数按小端序编码为协议字节流；编码失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为协议字节流。
+//
+// 先回填定长包头长度，再依次写入请求头与请求参数；成功返回可直接发送的字节流，
+// 写出失败时返回错误。
 func (obj *GetCompanyCategory) BuildRequest() ([]byte, error) {
+	// 包头定长 14 字节，两个长度校验位保持一致。
 	obj.reqHeader.PkgLen1 = 14
 	obj.reqHeader.PkgLen2 = 14
 
 	buf := new(bytes.Buffer)
+	// 请求头与请求参数均拼装进同一缓冲。
 	err := binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	err = binary.Write(buf, binary.LittleEndian, obj.request)
 	return buf.Bytes(), err
@@ -77,6 +85,7 @@ func (obj *GetCompanyCategory) BuildRequest() ([]byte, error) {
 
 // ParseResponse 解析服务端返回的公司资料目录并填充响应对象。
 //
+// 参数 `header` 为协议响应头，`data` 为去除响应头后的报文体。
 // 0:2 为条目条数；其后每条记录固定 152 字节：0:64 分类名称，64:144 文件名，
 // 144:148 起始偏移，148:152 内容长度。
 func (obj *GetCompanyCategory) ParseResponse(header *RespHeader, data []byte) error {
@@ -102,6 +111,7 @@ func (obj *GetCompanyCategory) ParseResponse(header *RespHeader, data []byte) er
 }
 
 // Response 返回解析完成后的公司资料目录响应数据。
+// 未调用 `ParseResponse` 前，返回对象的各字段保持零值。
 func (obj *GetCompanyCategory) Response() *GetCompanyCategoryReply {
 	return obj.reply
 }
@@ -118,25 +128,28 @@ type GetCompanyContent struct {
 
 // GetCompanyContentRequest 是公司资料正文读取的请求参数。
 type GetCompanyContentRequest struct {
-	Market   uint16   // 市场代码。
-	Code     [6]byte  // 证券代码。
-	Zero     uint16   // 保留字段。
-	Filename [80]byte // 资料文件名。
-	Start    uint32   // 内容起始偏移。
-	Length   uint32   // 请求内容长度。
-	Zero2    uint32   // 保留字段。
+	Market   uint16   // 市场代码（2 字节），取值与行情协议市场枚举一致。
+	Code     [6]byte  // 6 字节定长证券代码，尾部以零字节填充。
+	Zero     uint16   // 协议保留占位，发送时填 0，语义待确认。
+	Filename [80]byte // 80 字节定长资料文件名，来自目录条目返回值。
+	Start    uint32   // 正文在资料文件内的起始偏移（字节，4 字节）。
+	Length   uint32   // 本次请求读取的正文字节长度（4 字节）。
+	Zero2    uint32   // 协议保留占位，发送时填 0，语义待确认。
 }
 
 // GetCompanyContentReply 是公司资料正文读取的响应数据。
 type GetCompanyContentReply struct {
-	Market   uint16 // 市场代码。
-	Code     string // 证券代码。
+	Market   uint16 // 回显市场代码（2 字节）。
+	Code     string // 回显证券代码。
 	MarketOR uint16 // 回显市场字段，语义待确认。
-	Length   uint16 // 正文长度。
-	Content  string // 资料正文（GBK 解码后文本）。
+	Length   uint16 // 实际返回的正文字节长度（2 字节）。
+	Content  string // 资料正文，`GBK` 解码并剔除尾部填充后的文本。
 }
 
-// NewGetCompanyContent 创建并初始化公司资料正文读取请求对象；传入参数为空时使用默认参数。
+// NewGetCompanyContent 创建并初始化公司资料正文读取请求对象。
+//
+// 参数 `req` 携带市场、证券代码、目标文件名、正文偏移与读取长度；传 `nil` 时仅初始化协议骨架。
+// 返回初始化完成、可直接调用 `BuildRequest` 的协议对象。
 func NewGetCompanyContent(req *GetCompanyContentRequest) *GetCompanyContent {
 	obj := new(GetCompanyContent)
 	obj.reqHeader = new(ReqHeader)
@@ -158,12 +171,17 @@ func (obj *GetCompanyContent) applyRequest(req *GetCompanyContentRequest) {
 	obj.request = req
 }
 
-// BuildRequest 将请求头与请求参数按小端序编码为协议字节流；编码失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为协议字节流。
+//
+// 先回填定长包头长度，再依次写入请求头与请求参数；成功返回可直接发送的字节流，
+// 写出失败时返回错误。
 func (obj *GetCompanyContent) BuildRequest() ([]byte, error) {
+	// 包头定长 104 字节，两个长度校验位保持一致。
 	obj.reqHeader.PkgLen1 = 104
 	obj.reqHeader.PkgLen2 = 104
 
 	buf := new(bytes.Buffer)
+	// 请求头与请求参数均拼装进同一缓冲。
 	err := binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	err = binary.Write(buf, binary.LittleEndian, obj.request)
 	return buf.Bytes(), err
@@ -171,6 +189,7 @@ func (obj *GetCompanyContent) BuildRequest() ([]byte, error) {
 
 // ParseResponse 解析服务端返回的公司资料正文并填充响应对象。
 //
+// 参数 `header` 为协议响应头，`data` 为去除响应头后的报文体。
 // 12 字节定长头：0:2 市场代码，2:8 证券代码，8:10 回显市场字段（语义待确认），
 // 10:12 正文字节长度；12 起为对应长度的正文字节，尾部填充需剔除。
 func (obj *GetCompanyContent) ParseResponse(header *RespHeader, data []byte) error {
@@ -189,6 +208,7 @@ func (obj *GetCompanyContent) ParseResponse(header *RespHeader, data []byte) err
 }
 
 // Response 返回解析完成后的公司资料正文响应数据。
+// 未调用 `ParseResponse` 前，返回对象的各字段保持零值。
 func (obj *GetCompanyContent) Response() *GetCompanyContentReply {
 	return obj.reply
 }
@@ -203,54 +223,61 @@ type GetFinanceInfo struct {
 
 // GetFinanceInfoRequest 是财务概况查询的请求参数。
 type GetFinanceInfoRequest struct {
-	One    uint16  // 固定标记，默认 1。
-	Market uint8   // 市场代码。
-	Code   [6]byte // 证券代码。
+	One    uint16  // 固定协议标记；传 0 时由构造函数回填默认值 1。
+	Market uint8   // 市场代码（1 字节），取值与行情协议市场枚举一致。
+	Code   [6]byte // 6 字节定长证券代码，尾部以零字节填充。
 }
 
 // GetFinanceInfoReply 是财务概况查询的响应数据，含股本、资产负债、利润等财务字段。
+//
+// 除日期、编号类字段外，金额与股本字段均以协议原始 `float32` 顺序返回；
+// 资产负债类字段的计量单位口径未公开，调用方不应自行换算。
 type GetFinanceInfoReply struct {
-	Num                 uint16
-	Market              uint8
-	Code                string
-	FloatShares         float32
-	Province            uint16
-	Industry            uint16
-	UpdatedDate         uint32
-	IPODate             uint32
-	TotalShares         float32
-	StateShares         float32
-	SponsorLegalShares  float32
-	LegalShares         float32
-	BShares             float32
-	HShares             float32
-	EPS                 float32
-	TotalAssets         float32
-	CurrentAssets       float32
-	FixedAssets         float32
-	IntangibleAssets    float32
-	ShareholderCount    float32
-	CurrentLiabilities  float32
-	LongTermLiabilities float32
-	CapitalReserve      float32
-	TotalEquity         float32
-	OperatingRevenue    float32
-	OperatingCost       float32
-	AccountsReceivable  float32
-	OperatingProfit     float32
-	InvestmentIncome    float32
-	NetCashFlow         float32
-	TotalCashInflow     float32
-	Inventory           float32
-	TotalProfit         float32
-	AfterTaxProfit      float32
-	NetProfit           float32
-	UndistributedProfit float32
-	NetAssetsPerShare   float32
-	Reserved2           float32
+	Num                 uint16  // 记录编号（2 字节），协议序号语义待确认。
+	Market              uint8   // 回显市场代码（1 字节）。
+	Code                string  // 回显证券代码。
+	FloatShares         float32 // 流通股本（万股）。
+	Province            uint16  // 所属省份编号，编号表语义待确认。
+	Industry            uint16  // 所属行业编号，编号表语义待确认。
+	UpdatedDate         uint32  // 财务数据更新日期，按 `YYYYMMDD` 整数编码。
+	IPODate             uint32  // 上市日期，按 `YYYYMMDD` 整数编码。
+	TotalShares         float32 // 总股本（万股）。
+	StateShares         float32 // 国有股股本（万股），口径语义待确认。
+	SponsorLegalShares  float32 // 发起人法人股股本（万股），口径语义待确认。
+	LegalShares         float32 // 法人股股本（万股），口径语义待确认。
+	BShares             float32 // B 股股本（万股）。
+	HShares             float32 // H 股股本（万股）。
+	EPS                 float32 // 每股收益（元/股）。
+	TotalAssets         float32 // 资产总额，金额口径以协议返回为准。
+	CurrentAssets       float32 // 流动资产合计，金额口径以协议返回为准。
+	FixedAssets         float32 // 固定资产合计，金额口径以协议返回为准。
+	IntangibleAssets    float32 // 无形资产，金额口径以协议返回为准。
+	ShareholderCount    float32 // 股东户数，单位口径以协议返回为准。
+	CurrentLiabilities  float32 // 流动负债合计，金额口径以协议返回为准。
+	LongTermLiabilities float32 // 长期负债合计，金额口径以协议返回为准。
+	CapitalReserve      float32 // 资本公积，金额口径以协议返回为准。
+	TotalEquity         float32 // 股东权益合计，金额口径以协议返回为准。
+	OperatingRevenue    float32 // 主营业务收入，金额口径以协议返回为准。
+	OperatingCost       float32 // 主营业务成本，金额口径以协议返回为准。
+	AccountsReceivable  float32 // 应收账款，金额口径以协议返回为准。
+	OperatingProfit     float32 // 营业利润，金额口径以协议返回为准。
+	InvestmentIncome    float32 // 投资收益，金额口径以协议返回为准。
+	NetCashFlow         float32 // 现金流量净额，金额口径以协议返回为准。
+	TotalCashInflow     float32 // 现金流入合计，金额口径以协议返回为准。
+	Inventory           float32 // 存货，金额口径以协议返回为准。
+	TotalProfit         float32 // 利润总额，金额口径以协议返回为准。
+	AfterTaxProfit      float32 // 税后利润，金额口径以协议返回为准。
+	NetProfit           float32 // 净利润，金额口径以协议返回为准。
+	UndistributedProfit float32 // 未分配利润，金额口径以协议返回为准。
+	NetAssetsPerShare   float32 // 每股净资产（元/股）。
+	Reserved2           float32 // 协议保留字段，语义待确认。
 }
 
-// NewGetFinanceInfo 创建并初始化财务概况查询请求对象；传入参数为空时使用默认参数。
+// NewGetFinanceInfo 创建并初始化财务概况查询请求对象。
+//
+// 参数 `req` 携带 `Market` 市场代码与 `Code` 证券代码；`One` 传 0 时回填默认 1；
+// 传 `nil` 时仅初始化协议骨架并写入默认标记。
+// 返回初始化完成、可直接调用 `BuildRequest` 的协议对象。
 func NewGetFinanceInfo(req *GetFinanceInfoRequest) *GetFinanceInfo {
 	obj := new(GetFinanceInfo)
 	obj.reqHeader = new(ReqHeader)
@@ -276,22 +303,30 @@ func (obj *GetFinanceInfo) applyRequest(req *GetFinanceInfoRequest) {
 	obj.request = req
 }
 
-// BuildRequest 将请求头与请求参数按小端序编码为协议字节流；编码失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为协议字节流。
+//
+// 先回填定长包头长度，再依次写入请求头与请求参数；成功返回可直接发送的字节流，
+// 写出失败时返回错误。
 func (obj *GetFinanceInfo) BuildRequest() ([]byte, error) {
+	// 包头定长 11 字节，两个长度校验位保持一致。
 	obj.reqHeader.PkgLen1 = 11
 	obj.reqHeader.PkgLen2 = 11
 
 	buf := new(bytes.Buffer)
+	// 请求头与请求参数均拼装进同一缓冲。
 	err := binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	err = binary.Write(buf, binary.LittleEndian, obj.request)
 	return buf.Bytes(), err
 }
 
 // ParseResponse 按协议顺序解析服务端返回的财务字段并填充响应对象。
-// 报文顺序流式读取，读完一个字段后读指针自动前进；绑定字段的顺序必须与协议一致。
+//
+// 参数 `header` 为协议响应头，`data` 为去除响应头后的报文体。
+// 报文顺序流式读取，读完一个字段后读指针自动前进；绑定字段的顺序必须与协议一致；
+// 任一字段读取长度不足时返回读取错误。
 func (obj *GetFinanceInfo) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
-	// 小端序读取器，读完字段自动推进读指针。
+	// 读取器，读完字段自动推进读指针。
 	reader := bytes.NewReader(data)
 
 	// 头部：2 字节记录编号。
@@ -357,6 +392,7 @@ func (obj *GetFinanceInfo) ParseResponse(header *RespHeader, data []byte) error 
 }
 
 // Response 返回解析完成后的财务概况响应数据。
+// 未调用 `ParseResponse` 前，返回对象的各字段保持零值。
 func (obj *GetFinanceInfo) Response() *GetFinanceInfoReply {
 	return obj.reply
 }
@@ -371,43 +407,47 @@ type GetXDXRInfo struct {
 
 // GetXDXRInfoRequest 是除权除息信息查询的请求参数。
 type GetXDXRInfoRequest struct {
-	One    uint16  // 固定标记，默认 1。
-	Market uint8   // 市场代码。
-	Code   [6]byte // 证券代码。
+	One    uint16  // 固定协议标记；传 0 时由构造函数回填默认值 1。
+	Market uint8   // 市场代码（1 字节），取值与行情协议市场枚举一致。
+	Code   [6]byte // 6 字节定长证券代码，尾部以零字节填充。
 }
 
 // GetXDXRInfoReply 是除权除息信息查询的响应数据。
 type GetXDXRInfoReply struct {
-	Market   uint8      // 市场代码。
+	Market   uint8      // 回显市场代码（1 字节）。
 	MarketOR uint16     // 回显市场字段，语义待确认。
-	Code     string     // 证券代码。
-	Count    uint16     // 记录条数。
-	List     []XDXRItem // 权益变动记录列表。
+	Code     string     // 回显证券代码。
+	Count    uint16     // 服务端返回的权益记录条数。
+	List     []XDXRItem // 解析后的权益变动记录列表，按日期倒序排列。
 }
 
 // XDXRItem 表示一条除权除息或股本变动记录，按类别填充不同的价格与股本字段。
 // 未被当前类别使用的槽位保持空指针，不赋值。
 type XDXRItem struct {
-	Market          uint8     // 市场代码。
-	Code            string    // 证券代码。
+	Market          uint8     // 记录所属市场代码。
+	Code            string    // 记录对应证券代码。
 	Unknown         uint8     // 未确认字节，语义待确认。
 	Date            time.Time // 权益变动日期。
-	Category        uint8     // 变动类别编号。
-	Name            string    // 变动类别名称。
-	Fenhong         *float32  // 每股分红。
-	Peigujia        *float32  // 配股价。
-	Songzhuangu     *float32  // 送转股比例。
-	Peigu           *float32  // 配股比例。
-	Suogu           *float32  // 缩股比例。
-	Xingquanjia     *float32  // 行权价。
-	Fenshu          *float32  // 权证份数。
-	PreFloatShares  *float32  // 变动前流通股本。
-	PreTotalShares  *float32  // 变动前总股本。
-	PostFloatShares *float32  // 变动后流通股本。
-	PostTotalShares *float32  // 变动后总股本。
+	Category        uint8     // 变动类别编号，取值见 `xdxrCategoryName` 的映射表。
+	Name            string    // 变动类别中文名称，由类别编号映射得到。
+	Fenhong         *float32  // 每股分红（元/股）；不适用类别为空指针。
+	Peigujia        *float32  // 配股价（元/股）；不适用类别为空指针。
+	Songzhuangu     *float32  // 送转股比例，单位口径语义待确认；不适用类别为空指针。
+	Peigu           *float32  // 配股比例，单位口径语义待确认；不适用类别为空指针。
+	Suogu           *float32  // 缩股比例，单位口径语义待确认；不适用类别为空指针。
+	Xingquanjia     *float32  // 权证行权价（元/股）；不适用类别为空指针。
+	Fenshu          *float32  // 权证份数；不适用类别为空指针。
+	PreFloatShares  *float32  // 变动前流通股本，单位口径以协议返回为准；不适用类别为空指针。
+	PreTotalShares  *float32  // 变动前总股本，单位口径以协议返回为准；不适用类别为空指针。
+	PostFloatShares *float32  // 变动后流通股本，单位口径以协议返回为准；不适用类别为空指针。
+	PostTotalShares *float32  // 变动后总股本，单位口径以协议返回为准；不适用类别为空指针。
 }
 
-// NewGetXDXRInfo 创建并初始化除权除息信息查询请求对象；传入参数为空时使用默认参数。
+// NewGetXDXRInfo 创建并初始化除权除息信息查询请求对象。
+//
+// 参数 `req` 携带 `Market` 市场代码与 `Code` 证券代码；`One` 传 0 时回填默认 1；
+// 传 `nil` 时仅初始化协议骨架并写入默认标记。
+// 返回初始化完成、可直接调用 `BuildRequest` 的协议对象。
 func NewGetXDXRInfo(req *GetXDXRInfoRequest) *GetXDXRInfo {
 	obj := new(GetXDXRInfo)
 	obj.reqHeader = new(ReqHeader)
@@ -433,12 +473,17 @@ func (obj *GetXDXRInfo) applyRequest(req *GetXDXRInfoRequest) {
 	obj.request = req
 }
 
-// BuildRequest 将请求头与请求参数按小端序编码为协议字节流；编码失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为协议字节流。
+//
+// 先回填定长包头长度，再依次写入请求头与请求参数；成功返回可直接发送的字节流，
+// 写出失败时返回错误。
 func (obj *GetXDXRInfo) BuildRequest() ([]byte, error) {
+	// 包头定长 11 字节，两个长度校验位保持一致。
 	obj.reqHeader.PkgLen1 = 11
 	obj.reqHeader.PkgLen2 = 11
 
 	buf := new(bytes.Buffer)
+	// 请求头与请求参数均拼装进同一缓冲。
 	err := binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	err = binary.Write(buf, binary.LittleEndian, obj.request)
 	return buf.Bytes(), err
@@ -446,6 +491,7 @@ func (obj *GetXDXRInfo) BuildRequest() ([]byte, error) {
 
 // ParseResponse 解析服务端返回的除权除息记录并按日期倒序填充响应对象。
 //
+// 参数 `header` 为协议响应头，`data` 为去除响应头后的报文体。
 // 公共头 11 字节：0 市场，1:3 回显市场，3:9 代码，9:11 记录条数。
 // 每条记录固定 29 字节：市场、代码、保留字节、日期、类别编号，以及四个按类别解释的数值槽位。
 func (obj *GetXDXRInfo) ParseResponse(header *RespHeader, data []byte) error {
@@ -509,11 +555,14 @@ func (obj *GetXDXRInfo) ParseResponse(header *RespHeader, data []byte) error {
 }
 
 // Response 返回解析完成后的除权除息响应数据。
+// 未调用 `ParseResponse` 前，返回对象的各字段保持零值。
 func (obj *GetXDXRInfo) Response() *GetXDXRInfoReply {
 	return obj.reply
 }
 
-// decodeFixedGBK 解析定长 GBK 字符串：先按首个零字节截断填充区，再解码并去除首尾空白。
+// decodeFixedGBK 解析定长 `GBK` 字符串：先按首个零字节截断填充区，再解码并去除首尾空白。
+//
+// 参数 `data` 为定长原始字节；返回解码后的纯文本；入参为空时返回空串。
 func decodeFixedGBK(data []byte) string {
 	if idx := bytes.IndexByte(data, 0x00); idx >= 0 {
 		data = data[:idx]
@@ -521,12 +570,17 @@ func decodeFixedGBK(data []byte) string {
 	return strings.TrimSpace(Utf8ToGbk(data))
 }
 
-// float32FromBytes 将 4 字节小端位模式还原为浮点数。
+// float32FromBytes 将 4 字节位模式还原为浮点数。
+//
+// 参数 `data` 必须至少包含 4 字节；返回按 `float32` 位模式解释后的浮点值。
 func float32FromBytes(data []byte) float32 {
 	return math.Float32frombits(binary.LittleEndian.Uint32(data))
 }
 
-// xdxrCategoryName 将协议权益类别编号映射为中文名称；不在已知编号内时返回空串。
+// xdxrCategoryName 将协议权益类别编号映射为中文名称。
+//
+// 参数 `category` 为报文中的类别编号；命中已知编号时返回对应中文名称，
+// 未识别编号返回空串。
 func xdxrCategoryName(category uint8) string {
 	switch category {
 	case 1:

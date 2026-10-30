@@ -37,7 +37,7 @@ type MinuteTimeData struct {
 	Vol   int     // 成交量。
 }
 
-// NewGetMinuteTimeData 构造当日分时数据查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 BuildRequest 与 ParseResponse。
+// NewGetMinuteTimeData 构造当日分时数据查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 `BuildRequest` 与 `ParseResponse`。
 func NewGetMinuteTimeData(req *GetMinuteTimeDataRequest) *GetMinuteTimeData {
 	obj := new(GetMinuteTimeData)
 	obj.reqHeader = new(ReqHeader)
@@ -59,7 +59,7 @@ func (obj *GetMinuteTimeData) applyRequest(req *GetMinuteTimeDataRequest) {
 	obj.request = req
 }
 
-// BuildRequest 按小端序将请求头与请求参数编码为完整协议报文；缓冲区写入失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为完整协议报文；缓冲区写入失败时返回错误。
 func (obj *GetMinuteTimeData) BuildRequest() ([]byte, error) {
 	obj.reqHeader.PkgLen1 = 0x0e
 	obj.reqHeader.PkgLen2 = 0x0e
@@ -70,13 +70,16 @@ func (obj *GetMinuteTimeData) BuildRequest() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// ParseResponse 解析服务端返回的当日分时报文并填充响应对象；报文长度不足或解码失败时返回错误。
+// ParseResponse 解析服务端返回的当日分时报文并填充响应对象。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节；报文长度不足或解码失败
+// 时返回错误。
 func (obj *GetMinuteTimeData) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 
 	pos := 0
 	var ignored uint16
-	// 头部 2 字节：小端序采样条数。
+	// 头部 2 字节：的采样条数。
 	if err := binary.Read(bytes.NewBuffer(data[pos:pos+2]), binary.LittleEndian, &obj.reply.Count); err != nil {
 		return err
 	}
@@ -123,7 +126,7 @@ func (obj *GetMinuteTimeData) ParseResponse(header *RespHeader, data []byte) err
 	return nil
 }
 
-// Response 返回已解析完成的分时数据响应对象；未调用 ParseResponse 时返回空响应对象。
+// Response 返回已解析完成的分时数据响应对象；未调用 `ParseResponse` 时返回空响应对象。
 func (obj *GetMinuteTimeData) Response() *GetMinuteTimeDataReply {
 	return obj.reply
 }

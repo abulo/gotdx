@@ -21,21 +21,25 @@ type GetHistoryTransactionDataWithTrans struct {
 
 // GetHistoryTransactionDataWithTransReply 是带方向历史逐笔成交查询的响应数据。
 type GetHistoryTransactionDataWithTransReply struct {
-	Count    uint16                            // 返回条数。
-	PreClose float64                           // 昨收价。
-	List     []HistoryTransactionDataWithTrans // 带方向的历史逐笔成交。
+	Count    uint16                            // 服务端返回的成交记录条数。
+	PreClose float64                           // 昨收价（元）；协议内为 4 字节浮点位模式。
+	List     []HistoryTransactionDataWithTrans // 解析后的带方向历史逐笔成交列表。
 }
 
 // HistoryTransactionDataWithTrans 表示一条带成交方向的历史逐笔成交记录。
 type HistoryTransactionDataWithTrans struct {
-	Time   time.Time // 成交时间。
-	Price  float64   // 成交价。
-	Vol    int       // 成交量。
-	Num    int       // 笔数或委托笔数。
-	Action string    // 成交方向，如买、卖、中性。
+	Time   time.Time // 成交时间，由报文中的编码时分与请求日期拼接为本地时间。
+	Price  float64   // 成交价（元）；协议内为累计差值，按证券价位单位还原。
+	Vol    int       // 本笔成交量，单位口径以协议为准。
+	Num    int       // 本笔汇总成交笔数。
+	Action string    // 成交方向文本：买、卖、中性；未知编码以数字字符串原样保留。
 }
 
-// NewGetHistoryTransactionDataWithTrans 创建并初始化带方向历史逐笔成交查询请求对象；传入参数为空时使用默认参数。
+// NewGetHistoryTransactionDataWithTrans 创建并初始化带方向历史逐笔成交查询请求对象。
+//
+// 参数 `req` 复用通用成交请求结构，携带 `Date` 查询交易日、`Market` 市场代码、
+// `Code` 证券代码、`Start` 起始偏移与 `Count` 请求条数；传 `nil` 时仅初始化协议骨架。
+// 返回初始化完成、可直接调用 `BuildRequest` 的协议对象。
 func NewGetHistoryTransactionDataWithTrans(req *GetHistoryTransactionDataRequest) *GetHistoryTransactionDataWithTrans {
 	obj := &GetHistoryTransactionDataWithTrans{
 		reqHeader:  new(ReqHeader),
@@ -57,11 +61,16 @@ func (obj *GetHistoryTransactionDataWithTrans) applyRequest(req *GetHistoryTrans
 	obj.request = req
 }
 
-// BuildRequest 将请求头与请求参数按小端序编码为协议字节流；编码失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为协议字节流。
+//
+// 先回填定长包头长度，再依次写入请求头与请求参数；成功返回可直接发送的字节流，
+// 写出失败时返回错误。
 func (obj *GetHistoryTransactionDataWithTrans) BuildRequest() ([]byte, error) {
+	// 包头定长 0x12 字节，两个长度校验位保持一致。
 	obj.reqHeader.PkgLen1 = 0x12
 	obj.reqHeader.PkgLen2 = 0x12
 	buf := new(bytes.Buffer)
+	// 请求头与请求参数均拼装进同一缓冲。
 	if err := binary.Write(buf, binary.LittleEndian, obj.reqHeader); err != nil {
 		return nil, err
 	}
@@ -69,8 +78,11 @@ func (obj *GetHistoryTransactionDataWithTrans) BuildRequest() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// ParseResponse 解析服务端返回的带方向逐笔成交记录并填充响应对象；报文长度不足时返回错误。
-// 0:2 条数，2:6 昨收价；其后每条记录依次为编码时间、价格差值、成交量、笔数与 2 字节方向编码。
+// ParseResponse 解析服务端返回的带方向逐笔成交记录并填充响应对象。
+//
+// 参数 `header` 为协议响应头，`data` 为去除响应头后的报文体。
+// 0:2 条数，2:6 昨收价；其后每条记录依次为编码时间、价格差值、成交量、笔数与 2 字节方向编码；
+// 报文头部长度不足、时间拼接失败或方向编码字节缺失时返回错误。
 func (obj *GetHistoryTransactionDataWithTrans) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	// 头部至少需要 6 字节（条数 2 加昨收价 4），不足视为截断。
@@ -130,6 +142,7 @@ func (obj *GetHistoryTransactionDataWithTrans) ParseResponse(header *RespHeader,
 }
 
 // Response 返回解析完成后的带方向历史逐笔成交响应数据。
+// 未调用 `ParseResponse` 前，返回对象的各字段保持零值。
 func (obj *GetHistoryTransactionDataWithTrans) Response() *GetHistoryTransactionDataWithTransReply {
 	return obj.reply
 }

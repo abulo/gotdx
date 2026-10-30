@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 从偏移 0 开始查询深市 000001 最近 20 笔逐笔成交。
+	// `market` 取 `types.MarketSZ`（深市），代码 `000001`；`start=0` 为起始成交序号（从 0 开始），
+	// `count=20` 为本页请求笔数，返回当日逐笔成交明细。
 	items, err := client.StockTransaction(types.MarketSZ.Uint8(), "000001", 0, 20)
 	if err != nil {
 		log.Fatalln(err)

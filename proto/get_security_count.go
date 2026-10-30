@@ -29,7 +29,7 @@ type GetSecurityCountReply struct {
 	Count uint16 // 市场内证券总数。
 }
 
-// NewGetSecurityCount 构造证券数量查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 BuildRequest 与 ParseResponse。
+// NewGetSecurityCount 构造证券数量查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 `BuildRequest` 与 `ParseResponse`。
 func NewGetSecurityCount(req *GetSecurityCountRequest) *GetSecurityCount {
 	obj := new(GetSecurityCount)
 	obj.reqHeader = new(ReqHeader)
@@ -55,7 +55,7 @@ func (obj *GetSecurityCount) applyRequest(req *GetSecurityCountRequest) {
 	obj.request = req
 }
 
-// BuildRequest 按小端序将请求头与请求参数编码为完整协议报文；缓冲区写入失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为完整协议报文；缓冲区写入失败时返回错误。
 func (obj *GetSecurityCount) BuildRequest() ([]byte, error) {
 	obj.reqHeader.PkgLen1 = 2 + 2 + 4
 	obj.reqHeader.PkgLen2 = 2 + 2 + 4
@@ -66,16 +66,18 @@ func (obj *GetSecurityCount) BuildRequest() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// ParseResponse 解析服务端返回的证券数量报文并填充响应对象；报文长度不足时返回错误。
+// ParseResponse 解析服务端返回的证券数量报文并填充响应对象。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节；报文长度不足时返回错误。
 func (obj *GetSecurityCount) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 
-	// 响应体仅含前 2 字节：小端序无符号短整数表示市场证券总数。
+	// 响应体仅含前 2 字节：的无符号短整数表示市场证券总数。
 	obj.reply.Count = binary.LittleEndian.Uint16(data[:2])
 	return nil
 }
 
-// Response 返回已解析完成的证券数量响应数据；未调用 ParseResponse 时返回空响应对象。
+// Response 返回已解析完成的证券数量响应数据；未调用 `ParseResponse` 时返回空响应对象。
 func (obj *GetSecurityCount) Response() *GetSecurityCountReply {
 	return obj.reply
 }

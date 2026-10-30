@@ -13,7 +13,7 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
-	// 查询 MAC 服务器信息：当前交易日、上一交易日、会话计数、标志位与市场参数。
+	// 该请求不携带业务参数；返回当前交易日、上一交易日、会话计数、标志位与市场参数等服务端状态。
 	reply, err := client.MACServerInfo()
 	if err != nil {
 		log.Fatalln(err)

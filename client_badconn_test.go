@@ -12,32 +12,40 @@ import (
 )
 
 // fakeRespHeader 按 `proto.RespHeader` 的字段顺序构造 16 字节响应头，供本地模拟服务器回包使用。
+//
+// 参数 `seq` 为回显的请求编号；`method` 为协议命令码；`size` 为响应负载长度（单位字节），
+// 压缩后与解压后两个长度字段写入同一取值。返回完整头部字节切片；头部定长分配，不存在构造失败情形。
 func fakeRespHeader(seq uint32, method uint16, size uint16) []byte {
 	b := make([]byte, proto.MessageHeaderBytes)
-	binary.LittleEndian.PutUint32(b[0:4], 0) // 保留标识字节（对应 `I1`）
-	b[4] = 0                                 // 保留标识字节（对应 `I2`）
-	binary.LittleEndian.PutUint32(b[5:9], seq)
-	b[9] = 0 // 保留标识字节（对应 `I3`）
-	binary.LittleEndian.PutUint16(b[10:12], method)
-	binary.LittleEndian.PutUint16(b[12:14], size)
-	binary.LittleEndian.PutUint16(b[14:16], size)
+	binary.LittleEndian.PutUint32(b[0:4], 0)        // 保留标识字节（对应 `I1`），语义待确认
+	b[4] = 0                                        // 保留标识字节（对应 `I2`），语义待确认
+	binary.LittleEndian.PutUint32(b[5:9], seq)      // 回显的请求编号
+	b[9] = 0                                        // 保留标识字节（对应 `I3`），语义待确认
+	binary.LittleEndian.PutUint16(b[10:12], method) // 回显的协议命令码
+	binary.LittleEndian.PutUint16(b[12:14], size)   // 压缩后负载长度
+	binary.LittleEndian.PutUint16(b[14:16], size)   // 解压后负载长度，与上一字段同值
 	return b
 }
 
-// fakeHello1Body 构造不少于 189 字节的 `Hello1` 握手正文。
+// fakeHello1Body 构造一份 189 字节定长的 `Hello1` 握手响应正文，字段偏移与
+// `proto.Hello1Reply` 的解析布局一致。无入参；返回可直接拼接在响应头之后的负载字节切片。
 func fakeHello1Body() []byte {
 	body := make([]byte, 189)
-	binary.LittleEndian.PutUint16(body[1:3], 2026)
-	body[3] = 11
-	body[4] = 8
-	copy(body[67:89], "fake-server-name")
-	copy(body[89:153], "http://fake.example.com")
-	copy(body[159:189], "fake-category")
+	binary.LittleEndian.PutUint16(body[1:3], 2026) // 十六位年份
+	body[3] = 11                                   // 日
+	body[4] = 8                                    // 月
+	copy(body[67:89], "fake-server-name")          // 22 字节服务端名称定长段，尾部以空字节填充
+	copy(body[89:153], "http://fake.example.com")  // 64 字节网址定长段
+	copy(body[159:189], "fake-category")           // 30 字节类别文案定长段
 	return body
 }
 
-// fakeTDXServer 模拟通达信主站：握手正常；对 `KMSG_HISTORYMINUTETIMEDATE` 命令第一次回超长响应，
-// 之后按正常报文应答。返回本地监听地址，第二个返回值为关闭监听的回调函数。
+// fakeTDXServer 在本地回环地址启动一个模拟通达信主站：先正常应答 `Hello1` 握手，
+// 对 `KMSG_HISTORYMINUTETIMEDATE` 命令按首次、后续分别回包。
+//
+// 参数 `t` 用于监听失败时终止测试；`oversizedSize` 为首次超长响应的负载字节数，取 0 表示不
+// 模拟超长响应，两次请求均按正常报文应答。返回本地监听地址；第二个返回值为关闭监听的回调函数，
+// 测试结束后必须调用。监听端口分配失败时直接调用 `t.Fatalf` 终止测试。
 func fakeTDXServer(t *testing.T, oversizedSize uint16) (addr string, stop func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -59,9 +67,9 @@ func fakeTDXServer(t *testing.T, oversizedSize uint16) (addr string, stop func()
 					if _, err := io.ReadFull(conn, header); err != nil {
 						return
 					}
-					seq := binary.LittleEndian.Uint32(header[1:5])
-					pkgLen := binary.LittleEndian.Uint16(header[8:10])
-					method := binary.LittleEndian.Uint16(header[10:12])
+					seq := binary.LittleEndian.Uint32(header[1:5])      // 请求编号，响应头原样回显
+					pkgLen := binary.LittleEndian.Uint16(header[8:10])  // 报文体长度冗余字段二
+					method := binary.LittleEndian.Uint16(header[10:12]) // 协议命令码
 					payloadLen := 0
 					if pkgLen > 2 {
 						payloadLen = int(pkgLen - 2)
@@ -160,9 +168,9 @@ func TestExchangeTimeoutDiscardsConn(t *testing.T) {
 					if _, err := io.ReadFull(conn, header); err != nil {
 						return
 					}
-					seq := binary.LittleEndian.Uint32(header[1:5])
-					pkgLen := binary.LittleEndian.Uint16(header[8:10])
-					method := binary.LittleEndian.Uint16(header[10:12])
+					seq := binary.LittleEndian.Uint32(header[1:5])      // 请求编号，响应头原样回显
+					pkgLen := binary.LittleEndian.Uint16(header[8:10])  // 报文体长度冗余字段二
+					method := binary.LittleEndian.Uint16(header[10:12]) // 协议命令码
 					payloadLen := 0
 					if pkgLen > 2 {
 						payloadLen = int(pkgLen - 2)

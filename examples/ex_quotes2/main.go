@@ -14,7 +14,7 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
-	// 市场类别列表与代码列表按位置一一对应，长度必须一致。
+	// 类别序列与代码序列按下标一一配对：第 1 项美股 `TSLA`，第 2 项港股主板 `09988`；两序列长度必须一致。
 	items, err := client.ExQuotes2(
 		[]uint8{types.ExCategoryUSStock, types.ExCategoryHKMainBoard},
 		[]string{"TSLA", "09988"},

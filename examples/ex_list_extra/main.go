@@ -13,7 +13,7 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
-	// 前两个参数为协议内部取值，语义待确认，此处先传 0 演示调用。
+	// 参数 `a`、`b` 为协议附加定位参数，确切语义待确认，此处先传 0 演示调用；`count` 为本页请求 10 条记录。
 	items, err := client.ExListExtra(0, 0, 10)
 	if err != nil {
 		log.Fatalln(err)

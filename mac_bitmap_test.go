@@ -54,16 +54,18 @@ func TestMACBoardMembersQuotesRequestBitmap(t *testing.T) {
 	bitmap := MACFieldBitmap(MACFieldMainNetRatio, MACFieldChangeAt1000)
 	requestBitmap := MACBoardMembersQuotesRequestBitmap(bitmap, MACFilterKCB, MACFilterST, MACFilterBJ)
 
+	// 字段位 `0x6c` 落在第 `0x6c/8` 字节，位内偏移为 `0x6c%8`。
 	if requestBitmap[0x6c/8]&(1<<(0x6c%8)) == 0 {
 		t.Fatalf("main net ratio bit missing: %x", requestBitmap)
 	}
+	// 字段位 `0x90` 落在第 `0x90/8` 字节，位内偏移为 `0x90%8`。
 	if requestBitmap[0x90/8]&(1<<(0x90%8)) == 0 {
 		t.Fatalf("change-at-1000 bit missing: %x", requestBitmap)
 	}
-	if requestBitmap[17] != MACFilterFlags(MACFilterKCB, MACFilterST, MACFilterBJ) {
+	if requestBitmap[17] != MACFilterFlags(MACFilterKCB, MACFilterST, MACFilterBJ) { // 第 17 字节为板块过滤标志位
 		t.Fatalf("unexpected filter byte: %#x", requestBitmap[17])
 	}
-	if requestBitmap[19]&1 == 0 {
+	if requestBitmap[19]&1 == 0 { // 第 19 字节最低位为扩展控制位
 		t.Fatalf("extended control bit missing: %#x", requestBitmap[19])
 	}
 }

@@ -14,7 +14,7 @@ func main() {
 	client := exampleutil.NewUnifiedClient()
 	defer client.Disconnect()
 
-	// 查询深市 000001 与沪市 600008 两只 A 股的主行情快照。
+	// 市场序列与代码序列按下标一一对应：深市 `000001`、沪市 `600008`，批量取回详细盘口行情快照。
 	reply, err := client.StockQuotesDetail([]uint8{types.MarketSZ.Uint8(), types.MarketSH.Uint8()}, []string{"000001", "600008"})
 	if err != nil {
 		log.Fatalln(err)
@@ -24,7 +24,7 @@ func main() {
 		log.Printf("%+v", obj)
 	}
 
-	// 切换到扩展市场分类，查询美股 `TSLA` 的报价。
+	// 扩展市场类别取 `types.ExCategoryUSStock`（美股），代码 `TSLA`；类别序列与代码序列按下标一一对应。
 	exQuotes, err := client.ExQuotes([]uint8{types.ExCategoryUSStock}, []string{"TSLA"})
 	if err != nil {
 		log.Fatalln(err)

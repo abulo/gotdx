@@ -27,16 +27,17 @@ type Hello2Request struct {
 // Hello2Reply 保存第二次握手的响应结果，包含状态位、提示文案、下载链接与可选附加消息。
 // 标注为待确认的字段按原始数值与十六进制片段原样保留，不做语义解读。
 type Hello2Reply struct {
-	Info        string // 下载链接起点之后的整段原始文本，已按 GBK 解码
-	Had         uint8  // 是否存在附加消息的状态位
-	Unknown2    uint16 // 语义待确认，保留原始数值
-	Tips        string // 提示文案，已按 GBK 解码
-	Link        string // 下载链接，已按 GBK 解码
-	Msg         string // 状态位置位时尾部追加的附加消息，已按 GBK 解码
-	Unknown5Hex string // 语义待确认，保留原始十六进制片段
+	Info        string // 下载链接起点之后的整段原始文本，由链接与可选附加消息拼接而成，已按 GBK 解码。
+	Had         uint8  // 是否存在附加消息的状态位；取 0x01 时尾部携带附加消息。
+	Unknown2    uint16 // 语义待确认，第一至二字节的数值，保留原始值。
+	Tips        string // 提示文案，第三至五十二字节定长段，已按 GBK 解码。
+	Link        string // 下载链接，第五十八至一百七十七字节定长段，已按 GBK 解码。
+	Msg         string // 状态位置位时尾部追加的附加消息，已按 GBK 解码；无附加消息时保持空串。
+	Unknown5Hex string // 语义待确认，第五十三至五十七字节的原始十六进制片段。
 }
 
-// NewHello2 创建第二次握手协议对象，并初始化默认请求头与固定登录负载。
+// NewHello2 创建第二次握手协议对象，并初始化默认请求头与固定登录负载；无入参，
+// 返回已就绪的协议对象，对象内部状态非并发安全。
 func NewHello2() *Hello2 {
 	obj := new(Hello2)
 	obj.reqHeader = new(ReqHeader)
@@ -54,19 +55,26 @@ func NewHello2() *Hello2 {
 }
 
 // BuildRequest 把请求头与固定登录负载编码为协议字节流；编码失败时返回非空错误。
+//
+// 报文体长度为两字节头部长度加固定负载字节数，两个长度字段互为冗余校验。
 func (obj *Hello2) BuildRequest() ([]byte, error) {
 	b, err := hex.DecodeString(obj.contentHex)
 
+	// 长度字段记录两字节头部加上固定负载的总长度。
 	obj.reqHeader.PkgLen1 = 2 + uint16(len(b))
 	obj.reqHeader.PkgLen2 = 2 + uint16(len(b))
 
 	buf := new(bytes.Buffer)
+	// 请求头写入，随后追加固定登录负载。
 	err = binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	buf.Write(b)
 	return buf.Bytes(), err
 }
 
 // ParseResponse 解析第二次握手响应负载并填充内部响应结果；响应不足定长下限时返回错误。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节流；解析成功返回 `nil`，
+// 主体长度不足一百七十八字节时返回非空错误。
 func (obj *Hello2) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	// 响应主体不足定长下限一百七十八字节即视为非法握手响应，先拦截再切片。

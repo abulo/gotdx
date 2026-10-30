@@ -14,6 +14,7 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
+	// 参数 `market` 为深市，`code` 为 `000001`；返回今日与五日主力、散户净流入等资金流向字段。
 	reply, err := client.MACCapitalFlow(types.MarketSZ.Uint8(), "000001")
 	if err != nil {
 		log.Fatalln(err)

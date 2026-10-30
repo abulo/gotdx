@@ -19,6 +19,7 @@ func TestRawMainProtocolBuildRequestAndParseResponse(t *testing.T) {
 		if len(raw) <= 12 {
 			t.Fatalf("unexpected raw length: %d", len(raw))
 		}
+		// 三字节原始负载原样透传：长度记为 3，十六进制输出为 `010203`。
 		if err := msg.ParseResponse(&RespHeader{}, []byte{0x01, 0x02, 0x03}); err != nil {
 			t.Fatalf("parse response failed: %v", err)
 		}
@@ -176,6 +177,7 @@ func TestExExperimentalMessagesBuildRequestAndParseResponse(t *testing.T) {
 			t.Fatal(err)
 		}
 		writeFloat32(t, buf, 1234.5)
+		// 尾部两字节原样保留为 `TailHex`，十六进制输出为 `aabb`。
 		buf.Write([]byte{0xaa, 0xbb})
 
 		if err := msg.ParseResponse(&RespHeader{}, buf.Bytes()); err != nil {

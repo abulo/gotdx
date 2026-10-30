@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	// `pageSize` 为每页请求条数，`maxPages` 为本次演示允许翻页的最大页数。
+	// `pageSize` 为单次分页请求的标的条数，同时用于按页码推算下一页起始偏移。
 	pageSize = 1000
+	// `maxPages` 为本次演示允许翻页的最大页数；达到该页数后即使列表未取完也停止循环。
 	maxPages = 3
 )
 
@@ -30,7 +31,9 @@ func main() {
 
 	var fetched int
 	for page := 0; page < maxPages; page++ {
+		// 起始偏移 = 当前页码 × 每页条数，即跳过前面已拉取的记录。
 		start := uint32(page * pageSize)
+		// 从 `start` 偏移开始请求 `pageSize` 条证券列表记录。
 		items, err := client.ExList(start, pageSize)
 		if err != nil {
 			log.Fatalf("page=%d start=%d failed: %v", page, start, err)
@@ -40,7 +43,7 @@ func main() {
 			break
 		}
 
-		// 记录每页首条与末条，便于核对翻页边界。
+		// 记录每页首条与末条，便于核对翻页边界是否连续。
 		first := items[0]
 		last := items[len(items)-1]
 		fetched += len(items)

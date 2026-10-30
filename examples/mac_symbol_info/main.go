@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
-	// 查询深市证券 000001 的行情摘要；部分字段原始语义待确认，示例仅按返回值原样打印。
+	// `market` 取 `types.MarketSZ`（深市），代码 `000001`；返回个股静态信息与行情快照摘要。其中
+	// `Activity`、`VR` 等部分字段原始语义待确认，示例仅按返回值原样打印，不推断其口径。
 	reply, err := client.MACSymbolInfo(types.MarketSZ.Uint8(), "000001")
 	if err != nil {
 		log.Fatalln(err)

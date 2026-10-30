@@ -14,7 +14,9 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 查询深市平安银行（000001）最近 10 根秒级 K 线，不做复权。
+	// `category` 取 `types.KLINE_TYPE_SECONDS`（多秒 K 线，编号 13；下方注释掉的 `types.KLINE_TYPE_1MIN` 为备选周期）；
+	// `market` 取 `types.MarketSZ`（深市），代码 `000001`（平安银行）；`start=0` 为起始偏移条数，`count=10`
+	// 为请求条数；`times=1` 为周期倍数；`adjust` 取 `types.AdjustNone` 表示不复权。
 	bars, err := client.StockKLine(
 		types.KLINE_TYPE_SECONDS,
 		// types.KLINE_TYPE_1MIN,

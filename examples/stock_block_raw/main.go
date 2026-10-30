@@ -18,28 +18,29 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	// 查询默认板块文件的元信息，取得文件总大小。
+	// 查询默认板块文件 `BlockFileDefault`（`block.dat`）的元信息，返回文件总大小 `Size`（字节）。
 	meta, err := client.GetFileMeta(types.BlockFileDefault)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	log.Printf("file_meta name=%s size=%d", types.BlockFileDefault, meta.Size)
 
-	// 演示分块下载：从偏移 0 开始取前 1024 字节。
+	// 演示分块下载：第二参 `offset=0` 为文件内起始字节偏移，第三参 `1024` 为本次请求的字节数。
 	chunk, err := client.DownloadFile(types.BlockFileDefault, 0, 1024)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	log.Printf("download_chunk size=%d", chunk.Size)
 
-	// 演示整包下载：按元信息中的总大小一次性取完整个板块文件。
+	// 演示整包下载：第二参 `size=meta.Size` 为目标总字节数；传 0 时会先拉取元信息中的大小作为下载上限。
 	full, err := client.DownloadFullFile(types.BlockFileDefault, meta.Size)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	log.Printf("download_full size=%d", len(full))
 
-	// 平铺解析概念板块文件（`BlockFileGN`），每条为一个成分股条目，仅打印前 10 条。
+	// 平铺解析概念板块文件 `BlockFileGN`（`block_gn.dat`），返回成分股条目扁平列表；
+	// `min(10, len(...))` 防止切片越界，仅打印前 10 条。
 	flat, err := client.GetParsedBlockFile(types.BlockFileGN)
 	if err != nil {
 		log.Fatalln(err)
@@ -48,7 +49,8 @@ func main() {
 		log.Printf("flat block=%s type=%d code=%s", item.BlockName, item.BlockType, item.Code)
 	}
 
-	// 分组解析风格板块文件（`BlockFileFG`），每条为一个板块及其成分股计数，仅打印前 5 条。
+	// 分组解析风格板块文件 `BlockFileFG`（`block_fg.dat`），每条为一个板块及其成分股计数；
+	// `min(5, len(...))` 防止切片越界，仅打印前 5 条。
 	grouped, err := client.GetGroupedBlockFile(types.BlockFileFG)
 	if err != nil {
 		log.Fatalln(err)
@@ -58,6 +60,9 @@ func main() {
 	}
 }
 
+// min 返回整数 a 与 b 中较小的一个。
+//
+// 参数 a、b 为待比较的两个整数；返回值为二者较小值，用于在切片截断时把长度限制在有效范围内，避免越界。
 func min(a, b int) int {
 	if a < b {
 		return a

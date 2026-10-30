@@ -10,7 +10,7 @@ import (
 //
 // 该对象持有请求头、请求参数与响应数据；零值不可直接使用，必须通过
 // NewGetQuotesEncrypt 构造。对象绑定单次查询流程，不支持多协程并发复用。
-// 服务端响应经过异或加密，由 ParseResponse 在解析前统一解密。
+// 服务端响应经过异或加密，由 `ParseResponse` 在解析前统一解密。
 type GetQuotesEncrypt struct {
 	reqHeader  *ReqHeader
 	respHeader *RespHeader
@@ -20,38 +20,41 @@ type GetQuotesEncrypt struct {
 
 // GetQuotesEncryptRequest 是 GetQuotesEncrypt 查询使用的请求参数。
 type GetQuotesEncryptRequest struct {
-	Stocks []Stock // 待查询的证券列表。
+	Stocks []Stock // 待查询证券列表，每项由市场 `Market` 与代码 `Code` 唯一标识。
 }
 
 // GetQuotesEncryptReply 是 GetQuotesEncrypt 查询解析完成后的响应数据。
 type GetQuotesEncryptReply struct {
-	Count uint16               // 返回条数。
-	List  []EncryptedQuoteItem // 解密后的行情快照列表。
+	Count uint16               // 返回快照条数，`uint16`。
+	List  []EncryptedQuoteItem // 解密后的行情快照列表，长度与 `Count` 一致。
 }
 
 // EncryptedQuoteItem 表示一条解密后的加密行情快照，包含价格、量额与买卖档位。
 type EncryptedQuoteItem struct {
-	Market     uint8   // 市场代码。
-	Code       string  // 证券代码。
-	Active     uint16  // 活跃度字段，语义待确认。
-	Close      float64 // 最新价，单位为元。
-	PreClose   float64 // 昨收价，单位为元。
-	Open       float64 // 今开价，单位为元。
-	High       float64 // 最高价，单位为元。
-	Low        float64 // 最低价，单位为元。
-	Time       string  // 行情时间，格式为时:分:秒。
-	Vol        int     // 总成交量。
-	CurVol     int     // 现量。
-	Amount     float64 // 总成交额。
-	InVol      int     // 内盘量。
-	OutVol     int     // 外盘量。
-	SAmount    int     // 统计字段，语义待确认。
-	OpenAmount int     // 开盘金额，语义待确认。
-	BidLevels  []Level // 买盘五档列表。
-	AskLevels  []Level // 卖盘五档列表。
+	Market     uint8   // 市场代码，1 字节无符号整数。
+	Code       string  // 6 字节定长证券代码，按 `GBK` 还原。
+	Active     uint16  // 活跃度字段，2 字节`uint16`，语义待确认。
+	Close      float64 // 最新价，单位为元，由基准价直接还原。
+	PreClose   float64 // 昨收价，单位为元，基准价加差值后除以 100。
+	Open       float64 // 今开价，单位为元，基准价加差值后除以 100。
+	High       float64 // 最高价，单位为元，基准价加差值后除以 100。
+	Low        float64 // 最低价，单位为元，基准价加差值后除以 100。
+	Time       string  // 行情时间，格式为时:分:秒，由 4 字节`uint32` 拆分。
+	Vol        int     // 总成交量，变长整数解码。
+	CurVol     int     // 现量（最近一笔成交量），变长整数解码。
+	Amount     float64 // 总成交额，4 字节的单精度浮点数。
+	InVol      int     // 内盘量（主动卖盘成交量），变长整数解码。
+	OutVol     int     // 外盘量（主动买盘成交量），变长整数解码。
+	SAmount    int     // 统计字段，变长整数解码，语义待确认。
+	OpenAmount int     // 开盘金额，变长整数解码，语义待确认。
+	BidLevels  []Level // 买盘五档列表，按买一至买五顺序排列。
+	AskLevels  []Level // 卖盘五档列表，按卖一至卖五顺序排列。
 }
 
-// NewGetQuotesEncrypt 构造批量加密行情查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 BuildRequest 与 ParseResponse。
+// NewGetQuotesEncrypt 构造批量加密行情查询对象。
+//
+// 参数 `req` 指定待查询证券列表 `Stocks`；`req` 为 `nil` 时使用空请求参数。
+// 返回的对象可直接调用 `BuildRequest` 与 `ParseResponse`。
 func NewGetQuotesEncrypt(req *GetQuotesEncryptRequest) *GetQuotesEncrypt {
 	obj := &GetQuotesEncrypt{
 		reqHeader:  new(ReqHeader),
@@ -73,10 +76,13 @@ func (obj *GetQuotesEncrypt) applyRequest(req *GetQuotesEncryptRequest) {
 	obj.request = req
 }
 
-// BuildRequest 将待查询证券列表编码为协议报文，交由通用请求封装补齐命令字与包头；缓冲区写入失败时返回错误。
+// BuildRequest 将待查询证券列表编码为协议报文，交由通用请求封装补齐命令字与包头。
+//
+// 负载先写证券个数，再逐只写入市场、6 字节代码与固定附加标识；返回的字节切片
+// 可直接写入连接，缓冲区写入失败时返回错误。
 func (obj *GetQuotesEncrypt) BuildRequest() ([]byte, error) {
 	buf := new(bytes.Buffer)
-	// 先写小端序证券个数。
+	// 先写证券个数。
 	if err := binary.Write(buf, binary.LittleEndian, uint16(len(obj.request.Stocks))); err != nil {
 		return nil, err
 	}
@@ -101,7 +107,10 @@ func (obj *GetQuotesEncrypt) BuildRequest() ([]byte, error) {
 	return buildGenericRequest(0x0c, 0, 0x01, KMSG_QUOTESENCRYPT, buf.Bytes())
 }
 
-// ParseResponse 先对响应报文做异或解密，再逐条解析行情快照并填充响应对象；报文长度不足或字段越界时返回错误。
+// ParseResponse 先对响应报文做异或解密，再逐条解析行情快照并填充响应对象。
+//
+// 参数 `header` 为服务端响应头，`data` 为加密响应负载字节；报文长度不足、字段
+// 越界或解码失败时返回错误。
 func (obj *GetQuotesEncrypt) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	// 整段报文与 0x93 逐字节异或解密。
@@ -132,7 +141,7 @@ func (obj *GetQuotesEncrypt) ParseResponse(header *RespHeader, data []byte) erro
 		openDiff := getprice(xor, &pos)
 		highDiff := getprice(xor, &pos)
 		lowDiff := getprice(xor, &pos)
-		// 4 字节小端序时间编码，格式为时:分:秒。
+		// 4 字节时间编码，格式为时:分:秒。
 		if pos+4 > len(xor) {
 			return fmt.Errorf("invalid encrypted quote time %d", i)
 		}
@@ -142,7 +151,7 @@ func (obj *GetQuotesEncrypt) ParseResponse(header *RespHeader, data []byte) erro
 		_ = getprice(xor, &pos)
 		item.Vol = getprice(xor, &pos)
 		item.CurVol = getprice(xor, &pos)
-		// 成交额为 4 字节小端序单精度浮点数。
+		// 成交额为 4 字节的单精度浮点数。
 		item.Amount = getfloat32(xor, &pos)
 		item.InVol = getprice(xor, &pos)
 		item.OutVol = getprice(xor, &pos)
@@ -182,7 +191,7 @@ func (obj *GetQuotesEncrypt) ParseResponse(header *RespHeader, data []byte) erro
 	return nil
 }
 
-// Response 返回已解析完成的加密行情响应数据；未调用 ParseResponse 时返回空响应对象。
+// Response 返回已解析完成的加密行情响应数据；未调用 `ParseResponse` 时返回空响应对象。
 func (obj *GetQuotesEncrypt) Response() *GetQuotesEncryptReply {
 	return obj.reply
 }

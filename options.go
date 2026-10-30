@@ -20,17 +20,17 @@ const (
 // 对应字段，后传入的选项优先生效。各字段的零值表示"沿用对应默认值"，字段级并发读写
 // 应在构造阶段完成，连接建立后不应再修改。
 type Options struct {
-	TCPAddress          string   // 主行情服务器地址
-	TCPAddressPool      []string // 主行情服务器地址池
-	ExTCPAddress        string   // 扩展行情服务器地址
-	ExTCPAddressPool    []string // 扩展行情服务器地址池
-	MacTCPAddress       string   // MAC 主行情服务器地址
-	MacTCPAddressPool   []string // MAC 主行情服务器地址池
-	MacExTCPAddress     string   // MAC 扩展行情服务器地址
-	MacExTCPAddressPool []string // MAC 扩展行情服务器地址池
-	AutoSelectFastest   bool     // 连接前先对地址池做 TCP 测速并优先尝试低延迟节点
-	MaxRetryTimes       int      // 重试次数
-	TimeoutSec          int      // 连接和读写超时时间，单位秒
+	TCPAddress          string   // 主行情服务器单点地址，格式为 `host:port`；空串时回退到主站地址池
+	TCPAddressPool      []string // 主行情服务器地址池，连接时按顺序或测速结果依次尝试；空切片使用内置默认池
+	ExTCPAddress        string   // 扩展行情服务器单点地址，格式为 `host:port`；空串时回退到扩展站地址池
+	ExTCPAddressPool    []string // 扩展行情服务器地址池；空切片使用内置默认池
+	MacTCPAddress       string   // MAC 主行情服务器单点地址，格式为 `host:port`；空串时回退到 MAC 主站地址池
+	MacTCPAddressPool   []string // MAC 主行情服务器地址池；空切片使用内置默认池
+	MacExTCPAddress     string   // MAC 扩展行情服务器单点地址，格式为 `host:port`；空串时回退到 MAC 扩展站地址池
+	MacExTCPAddressPool []string // MAC 扩展行情服务器地址池；空切片使用内置默认池
+	AutoSelectFastest   bool     // 为 `true` 时连接前先对地址池做 TCP 测速并优先尝试低延迟节点；为 `false` 按配置顺序拨号
+	MaxRetryTimes       int      // 单次请求写失败的重试次数；构造阶段由默认值 3 填充，连接流程中按该值重试
+	TimeoutSec          int      // 连接与读写共用的超时时间，单位秒；构造阶段由默认值 8 秒填充，非正数回退默认
 	FuturesCalendarPath string   // 期货交易日历 SQLite 路径；为空时不转换 MAC 期货自然时间
 }
 
@@ -85,6 +85,8 @@ func WithTCPAddress(tcpAddress string) Option {
 }
 
 // WithTCPAddressPool 设置主行情服务器地址池，连接时按顺序或测速结果依次尝试。
+//
+// 参数 `ips` 为 `host:port` 地址序列，整体替换原地址池；不传参数（空序列）时清空地址池。
 func WithTCPAddressPool(ips ...string) Option {
 	return func(o *Options) {
 		o.TCPAddressPool = ips
@@ -99,6 +101,8 @@ func WithExTCPAddress(tcpAddress string) Option {
 }
 
 // WithExTCPAddressPool 设置扩展行情服务器地址池，连接时按顺序或测速结果依次尝试。
+//
+// 参数 `ips` 为 `host:port` 地址序列，整体替换原地址池；不传参数时清空地址池。
 func WithExTCPAddressPool(ips ...string) Option {
 	return func(o *Options) {
 		o.ExTCPAddressPool = ips
@@ -113,6 +117,8 @@ func WithMacTCPAddress(tcpAddress string) Option {
 }
 
 // WithMacTCPAddressPool 设置 MAC 主行情服务器地址池，连接时按顺序或测速结果依次尝试。
+//
+// 参数 `ips` 为 `host:port` 地址序列，整体替换原地址池；不传参数时清空地址池。
 func WithMacTCPAddressPool(ips ...string) Option {
 	return func(o *Options) {
 		o.MacTCPAddressPool = ips
@@ -127,6 +133,8 @@ func WithMacExTCPAddress(tcpAddress string) Option {
 }
 
 // WithMacExTCPAddressPool 设置 MAC 扩展行情服务器地址池，连接时按顺序或测速结果依次尝试。
+//
+// 参数 `ips` 为 `host:port` 地址序列，整体替换原地址池；不传参数时清空地址池。
 func WithMacExTCPAddressPool(ips ...string) Option {
 	return func(o *Options) {
 		o.MacExTCPAddressPool = ips
@@ -143,6 +151,8 @@ func WithTimeoutSec(timeoutSec int) Option {
 }
 
 // WithFuturesCalendarPath 设置 MAC 期货 K 线自然时间转换使用的 `SQLite` 交易日历路径。
+//
+// 参数 `path` 为日历文件路径；传入空串时关闭期货自然时间转换，保留服务端原始交易时间。
 func WithFuturesCalendarPath(path string) Option {
 	return func(o *Options) {
 		o.FuturesCalendarPath = path
@@ -150,6 +160,8 @@ func WithFuturesCalendarPath(path string) Option {
 }
 
 // WithAutoSelectFastest 启用或关闭连接前的地址池 TCP 测速排序，启用后优先连接低延迟节点。
+//
+// 参数 `enabled` 为 `true` 时启用测速排序，为 `false` 时按配置顺序拨号。
 func WithAutoSelectFastest(enabled bool) Option {
 	return func(o *Options) {
 		o.AutoSelectFastest = enabled

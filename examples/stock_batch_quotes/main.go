@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 批量查询深市 000001、沪市 600000、深市 300750 三只证券，市场下标与代码下标一一对应。
+	// 市场序列与代码序列按下标一一对应：深市 `000001`、沪市 `600000`、深市 `300750`；返回快照行情条目，
+	// 包装层会先按小数位换算价格、再按流通股本补齐换手率。
 	items, err := client.StockQuotes(
 		[]uint8{types.MarketSZ.Uint8(), types.MarketSH.Uint8(), types.MarketSZ.Uint8()},
 		[]string{"000001", "600000", "300750"},

@@ -99,6 +99,8 @@ func TestConnectUsesAddressPoolFallback(t *testing.T) {
 }
 
 // stubConn 是不进行真实网络读写的 `net.Conn` 桩，供拨号探测测试替换真实连接。
+// `Read` 恒返回 `io.EOF`，`Write` 原样返回写入长度，关闭与三类超时设置均为空操作；
+// 本地与远端地址分别返回固定的 `stubAddr` 桩。
 type stubConn struct{}
 
 func (stubConn) Read(b []byte) (int, error)       { return 0, io.EOF }
@@ -110,7 +112,7 @@ func (stubConn) SetDeadline(time.Time) error      { return nil }
 func (stubConn) SetReadDeadline(time.Time) error  { return nil }
 func (stubConn) SetWriteDeadline(time.Time) error { return nil }
 
-// stubAddr 是 `net.Addr` 的最小桩实现，仅返回固定的网络类型与地址文本。
+// stubAddr 是 `net.Addr` 的最小桩实现；`Network` 恒返回 `tcp`，`String` 返回底层文本。
 type stubAddr string
 
 func (a stubAddr) Network() string { return "tcp" }

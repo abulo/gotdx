@@ -28,7 +28,7 @@ type GetIndexMomentumReply struct {
 	Values []int  // 累计动量值序列。
 }
 
-// NewGetIndexMomentum 构造指数动量查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 BuildRequest 与 ParseResponse。
+// NewGetIndexMomentum 构造指数动量查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 `BuildRequest` 与 `ParseResponse`。
 func NewGetIndexMomentum(req *GetIndexMomentumRequest) *GetIndexMomentum {
 	obj := new(GetIndexMomentum)
 	obj.reqHeader = new(ReqHeader)
@@ -50,7 +50,7 @@ func (obj *GetIndexMomentum) applyRequest(req *GetIndexMomentumRequest) {
 	obj.request = req
 }
 
-// BuildRequest 按小端序将请求头与请求参数编码为完整协议报文；缓冲区写入失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为完整协议报文；缓冲区写入失败时返回错误。
 func (obj *GetIndexMomentum) BuildRequest() ([]byte, error) {
 	obj.reqHeader.PkgLen1 = 0x0a
 	obj.reqHeader.PkgLen2 = 0x0a
@@ -62,12 +62,15 @@ func (obj *GetIndexMomentum) BuildRequest() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// ParseResponse 解析服务端返回的指数动量报文并填充响应对象；报文长度不足或解码失败时返回错误。
+// ParseResponse 解析服务端返回的指数动量报文并填充响应对象。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节；报文长度不足或解码失败
+// 时返回错误。
 func (obj *GetIndexMomentum) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 
 	pos := 0
-	// 头部 2 字节：小端序动量条数。
+	// 头部 2 字节：动量条数。
 	if err := binary.Read(bytes.NewBuffer(data[:2]), binary.LittleEndian, &obj.reply.Count); err != nil {
 		return err
 	}
@@ -85,7 +88,7 @@ func (obj *GetIndexMomentum) ParseResponse(header *RespHeader, data []byte) erro
 	return nil
 }
 
-// Response 返回已解析完成的指数动量响应数据；未调用 ParseResponse 时返回空响应对象。
+// Response 返回已解析完成的指数动量响应数据；未调用 `ParseResponse` 时返回空响应对象。
 func (obj *GetIndexMomentum) Response() *GetIndexMomentumReply {
 	return obj.reply
 }

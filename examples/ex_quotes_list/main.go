@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
-	// 排序字段为代码，`reverse` 传 `false` 表示正序排列。
+	// 参数 `category` 为美股类别；`start` 为起始偏移 0；`count` 为本页 20 条；`sortType` 按代码排序；
+	// `reverse` 为 `false` 表示升序排列。
 	items, err := client.ExQuotesList(types.ExCategoryUSStock, 0, 20, types.SortCode, false)
 	if err != nil {
 		log.Fatalln(err)

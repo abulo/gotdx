@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
-	// 市场类别为美股，标的代码 `TSLA`；尾部原始字节仅截取前 80 个字符预览。
+	// 参数 `category` 为美股类别，`code` 为标的代码 `TSLA`；`PreviewHex` 把尾部原始字节截取前 80 个
+	// 字符用于日志预览，超出部分不再输出。
 	reply, err := client.ExExperiment2487(types.ExCategoryUSStock, "TSLA")
 	if err != nil {
 		log.Fatalln(err)

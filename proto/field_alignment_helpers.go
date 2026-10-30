@@ -153,6 +153,8 @@ var exGoodsTypeNames = map[uint8]string{
 }
 
 // macIndustryBoardSymbol 按行业编号查表返回对应的 MAC 板块代码；编号为零或查表未命中时返回空串。
+//
+// 参数 `industry` 为四位数行业编号；返回对照表中的板块协议代码，表外编号返回空串。
 func macIndustryBoardSymbol(industry uint32) string {
 	if industry == 0 {
 		return ""
@@ -161,6 +163,8 @@ func macIndustryBoardSymbol(industry uint32) string {
 }
 
 // macLotSizeBoardSymbol 按手数编号平移生成板块代码；编号为零时返回空串。
+//
+// 参数 `lotSize` 为手数编号；返回基准码加编号平移后的板块代码字符串。
 func macLotSizeBoardSymbol(lotSize uint32) string {
 	if lotSize == 0 {
 		return ""
@@ -169,6 +173,8 @@ func macLotSizeBoardSymbol(lotSize uint32) string {
 }
 
 // exGoodsTypeName 按品种类别编号查表返回协议原始类别标识；未知编号返回空串。
+//
+// 参数 `goodsType` 为扩展市场品种类别编号；返回对照表中的原始类别标识，未命中返回空串。
 func exGoodsTypeName(goodsType uint8) string {
 	return exGoodsTypeNames[goodsType]
 }

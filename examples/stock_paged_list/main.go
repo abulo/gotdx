@@ -10,10 +10,13 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
-// 分页参数：每页条数、最多翻页数、起始页偏移。
+// 分页遍历示例使用的本地翻页参数。
 const (
-	pageSize  = 800
-	maxPages  = 3
+	// pageSize 每页请求的证券条数，作为 `StockList` 的 `count` 参数；单次请求条数受协议单页上限约束。
+	pageSize = 800
+	// maxPages 最多翻页次数（含起始页）；达到该页数后即使列表尚未取完也停止遍历，避免一次性拉取全量。
+	maxPages = 3
+	// startPage 起始页序号，0 表示从证券列表最前面（偏移 0）开始翻页。
 	startPage = 0
 )
 
@@ -29,7 +32,7 @@ func main() {
 
 	log.Printf("market=SZ total=%d page_size=%d max_pages=%d", total, pageSize, maxPages)
 
-	// 逐页翻取证券列表；某页返回为空时说明已到列表末尾，提前结束。
+	// 逐页翻取深市证券列表；`start` 为起始偏移序号，等于页码乘以每页条数；某页返回为空时说明已到列表末尾，提前结束。
 	var fetched int
 	for page := startPage; page < maxPages; page++ {
 		start := uint32(page * pageSize)

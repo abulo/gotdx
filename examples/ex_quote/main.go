@@ -14,6 +14,7 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
+	// 参数 `category` 为美股类别，`code` 为标的代码 `TSLA`，查询单只标的最新行情报价。
 	item, err := client.ExQuote(types.ExCategoryUSStock, "TSLA")
 	if err != nil {
 		log.Fatalln(err)

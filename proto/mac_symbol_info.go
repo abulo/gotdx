@@ -21,40 +21,43 @@ type MACSymbolInfo struct {
 
 // MACSymbolInfoRequest 保存股票摘要查询的市场与标的代码参数，其余字段为协议保留占位。
 type MACSymbolInfoRequest struct {
-	Market   uint16
-	Code     [22]byte
-	One      uint32
-	Reserved [12]byte
+	Market   uint16   // 市场代码，两字节，取值见 `types.Market*` 常量。
+	Code     [22]byte // 证券代码，GBK 编码定长 22 字节，不足补空字符。
+	One      uint32   // 协议固定标志位，固定填 1，为 0 时由构造函数回填 1，语义待确认。
+	Reserved [12]byte // 协议保留填充字节，填零。
 }
 
 // MACSymbolInfoReply 保存股票摘要响应的全部字段；其中三个保留槽位的原始语义待确认，
 // 仅按线上类型原样解码保存，未据此推断额外含义。
 type MACSymbolInfoReply struct {
-	Market        uint16
-	Code          string
-	Name          string
-	DateTime      time.Time
-	Activity      uint32
-	PreClose      float64
-	Open          float64
-	High          float64
-	Low           float64
-	Close         float64
-	Momentum      float64
-	Vol           uint32
-	Amount        float64
-	InsideVolume  uint32
-	OutsideVolume uint32
-	Decimal       uint16
-	UnknownA      uint32
-	UnknownB      float64
-	UnknownC      uint32
-	VR            float64
-	Turnover      float64
-	Avg           float64
+	Market        uint16    // 市场代码，两字节。
+	Code          string    // 证券代码，GBK 解码。
+	Name          string    // 证券名称，GBK 解码。
+	DateTime      time.Time // 行情对应的本地时间。
+	Activity      uint32    // 活跃度指标，四字节，口径语义待确认。
+	PreClose      float64   // 昨收价，单精度浮点还原。
+	Open          float64   // 开盘价，单精度浮点还原。
+	High          float64   // 最高价，单精度浮点还原。
+	Low           float64   // 最低价，单精度浮点还原。
+	Close         float64   // 收盘价，单精度浮点还原。
+	Momentum      float64   // 动量指标，单精度浮点还原，语义待确认。
+	Vol           uint32    // 成交量，四字节。
+	Amount        float64   // 成交额，单精度浮点还原。
+	InsideVolume  uint32    // 内盘成交量，四字节。
+	OutsideVolume uint32    // 外盘成交量，四字节。
+	Decimal       uint16    // 价格小数位数，两字节。
+	UnknownA      uint32    // 协议保留槽位（150:154），四字节，语义待确认。
+	UnknownB      float64   // 协议保留槽位（154:158），单精度浮点还原，语义待确认。
+	UnknownC      uint32    // 协议保留槽位（178:182），四字节，语义待确认。
+	VR            float64   // 量比，单精度浮点还原。
+	Turnover      float64   // 换手率，单精度浮点还原。
+	Avg           float64   // 均价，单精度浮点还原。
 }
 
 // NewMACSymbolInfo 创建股票摘要查询对象；请求参数为空时使用内置默认参数。
+//
+// 参数 `req` 指定预填查询参数，可传 `nil`：`Market` 为市场代码、`Code` 为证券代码；
+// `One` 为 0 时回填默认值 1。
 func NewMACSymbolInfo(req *MACSymbolInfoRequest) *MACSymbolInfo {
 	obj := &MACSymbolInfo{
 		reqHeader:  new(ReqHeader),
@@ -80,16 +83,23 @@ func (obj *MACSymbolInfo) applyRequest(req *MACSymbolInfoRequest) {
 	obj.request = req
 }
 
-// BuildRequest 编码请求参数并返回完整协议报文；序列化失败时返回错误。
+// BuildRequest 编码请求参数并返回完整协议报文；结构体序列化失败时返回错误。
+//
+// 该方法无外部入参，从已填充的 `request` 读取参数：整个请求结构整体写入负载，
+// 再由 `buildExRequest` 追加命令码 `KMSG_MACSYMBOLINFO` 与请求头封装成完整报文。
 func (obj *MACSymbolInfo) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
+	// 请求结构字段与线上布局一致，整体序列化即可。
 	if err := binary.Write(payload, binary.LittleEndian, obj.request); err != nil {
 		return nil, err
 	}
+	// 追加命令码与标准请求头，组装为可直接发送的完整报文。
 	return buildExRequest(KMSG_MACSYMBOLINFO, payload.Bytes())
 }
 
 // ParseResponse 解码服务端返回的字节流并填充响应；报文长度不足 194 字节时返回错误。
+//
+// 参数 `header` 为服务端回传的响应头，`data` 为解压后的响应负载字节流。
 func (obj *MACSymbolInfo) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	// 响应为 194 字节定长布局，长度不足即判定为非法报文，避免后续切片越界。

@@ -22,7 +22,7 @@ func main() {
 		{name: "SH", market: types.MarketSH.Uint8()},
 		{name: "BJ", market: types.MarketBJ.Uint8()},
 	} {
-		// 依次统计深市、沪市、北交所三个市场的证券数量。
+		// `market` 分别取深市、沪市、北交所代码；`StockCount` 返回服务端统计的该市场证券总数。
 		count, err := client.StockCount(market.market)
 		if err != nil {
 			log.Fatalf("%s count failed: %v", market.name, err)

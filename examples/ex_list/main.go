@@ -13,6 +13,7 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
+	// 参数 `start` 为起始偏移序号 0，`count` 为本页请求 20 条证券列表记录。
 	items, err := client.ExList(0, 20)
 	if err != nil {
 		log.Fatalln(err)

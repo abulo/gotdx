@@ -14,7 +14,7 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 批量查询深市 000001、沪市 600000 两只证券的主行情快照。
+	// 市场序列与代码序列按下标一一对应：深市 `000001`、沪市 `600000`；返回带五档买卖盘的详细行情快照。
 	items, err := client.StockQuotesDetail(
 		[]uint8{types.MarketSZ.Uint8(), types.MarketSH.Uint8()},
 		[]string{"000001", "600000"},

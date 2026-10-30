@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
-	// 周期为日线，起始偏移 0，请求 10 根 K 线，周期倍数为 1。
+	// 参数 `category` 为美股类别，`code` 为 `TSLA`；`period` 为日线周期；`start` 为 0 表示从最新一根
+	// 向前取数；`count` 为请求 10 根 K 线；`times` 为周期倍数，取 1 表示不放大周期。
 	items, err := client.ExKLine(types.ExCategoryUSStock, "TSLA", types.KLINE_TYPE_DAILY, 0, 10, 1)
 	if err != nil {
 		log.Fatalln(err)

@@ -14,14 +14,14 @@ import (
 func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
-	// 板块类型取全部板块。
+	// 参数 `boardType` 取全部板块类型 `BoardTypeAll`；`MACBoardCount` 返回该类型板块的服务端总数。
 	BoardType := types.BoardTypeAll
 	count, _err := client.MACBoardCount(BoardType)
 	if _err != nil {
 		log.Fatalln(_err)
 	}
 
-	// 以板块总数作为列表请求上限，由接口内部自动分页拉取。
+	// 把板块总数作为 `count` 上限传入；接口内部按固定单页大小自动分页，末页自动收缩。
 	items, err := client.MACBoardList(BoardType, uint32(count))
 	if err != nil {
 		log.Fatalln(err)

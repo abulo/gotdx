@@ -14,7 +14,7 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
-	// 板块类型取行业板块，从偏移 0 开始请求 20 条记录。
+	// 参数 `boardType` 取行业板块类型 `BoardTypeHY`；`start` 为起始偏移序号 0；`pageSize` 为本页请求 20 条。
 	items, err := client.ExBoardList(types.BoardTypeHY, 0, 20)
 	if err != nil {
 		log.Fatalln(err)

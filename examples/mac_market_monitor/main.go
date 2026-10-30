@@ -15,6 +15,8 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
+	// 参数 `market` 为深市；`start` 为起始记录序号 0（偏移受 `uint16` 上界 65535 限制）；`count`
+	// 为期望异动条数上限 20，接口内部自动分页。
 	items, err := client.MACMarketMonitor(types.MarketSZ.Uint8(), 0, 20)
 	if err != nil {
 		log.Fatalln(err)

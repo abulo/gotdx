@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 查询 A 股分类，按总成交额降序排列，从偏移 0 开始取前 20 条。
+	// `category` 取 `types.CategoryA`（A 股分类）；`start=0` 为起始偏移序号，`count=20` 为本页条数；
+	// `sortType` 取 `types.SortTotalAmount`（按总成交额排序）；`reverse=true` 表示降序；`filter=0` 表示不附加筛选位图。
 	items, err := client.StockQuotesList(
 		types.CategoryA,
 		0,

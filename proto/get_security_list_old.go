@@ -21,17 +21,20 @@ type GetSecurityListOld struct {
 
 // GetSecurityListOldRequest 是 GetSecurityListOld 查询使用的请求参数。
 type GetSecurityListOldRequest struct {
-	Market uint16 // 市场代码。
-	Start  uint16 // 起始偏移。
+	Market uint16 // 市场代码，`uint16`，取值对应 `types` 包市场枚举。
+	Start  uint16 // 起始偏移，`uint16`，从 0 开始按页递增。
 }
 
 // GetSecurityListOldReply 是 GetSecurityListOld 查询解析完成后的响应数据。
 type GetSecurityListOldReply struct {
-	Count uint16     // 返回条数。
-	List  []Security // 旧版协议解析出的证券列表。
+	Count uint16     // 本页实际返回条数，`uint16`。
+	List  []Security // 旧版协议解析出的证券列表，复用新版 `Security` 结构。
 }
 
-// NewGetSecurityListOld 构造旧版证券列表查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 BuildRequest 与 ParseResponse。
+// NewGetSecurityListOld 构造旧版证券列表查询对象。
+//
+// 参数 `req` 指定市场 `Market` 与起始偏移 `Start`；`req` 为 `nil` 时使用空请求参数。
+// 返回的对象可直接调用 `BuildRequest` 与 `ParseResponse`。
 func NewGetSecurityListOld(req *GetSecurityListOldRequest) *GetSecurityListOld {
 	obj := &GetSecurityListOld{
 		reqHeader:  new(ReqHeader),
@@ -53,8 +56,12 @@ func (obj *GetSecurityListOld) applyRequest(req *GetSecurityListOldRequest) {
 	obj.request = req
 }
 
-// BuildRequest 按小端序将请求头与请求参数编码为完整协议报文；缓冲区写入失败时返回错误。
+// BuildRequest 将请求头与请求参数编码为完整协议报文。
+//
+// 返回的字节切片可直接写入连接；`PkgLen1` 与 `PkgLen2` 双写为同一负载长度，
+// 缓冲区写入失败时返回错误。
 func (obj *GetSecurityListOld) BuildRequest() ([]byte, error) {
+	// 负载 6 字节：市场 `uint16` 占 2、起始偏移 `uint16` 占 2，另含 2 字节协议保留。
 	obj.reqHeader.PkgLen1 = 6
 	obj.reqHeader.PkgLen2 = 6
 	buf := new(bytes.Buffer)
@@ -65,7 +72,10 @@ func (obj *GetSecurityListOld) BuildRequest() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// ParseResponse 按旧版协议格式解析证券列表报文并填充响应对象；报文长度不足或记录越界时返回错误。
+// ParseResponse 按旧版协议格式解析证券列表报文并填充响应对象。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节；报文长度不足或记录越界
+// 时返回错误。
 func (obj *GetSecurityListOld) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	// 至少需要容纳 2 字节条数，否则视为非法报文。
@@ -93,7 +103,7 @@ func (obj *GetSecurityListOld) ParseResponse(header *RespHeader, data []byte) er
 		item.VolUnit = item.Vol
 		// 偏移 20 为价格小数位数，1 字节有符号整数。
 		item.DecimalPoint = int8(data[pos+20])
-		// 偏移 21 起 4 字节小端序单精度浮点数昨收价。
+		// 偏移 21 起 4 字节的单精度浮点数昨收价。
 		item.PreClose = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+21 : pos+25])))
 		obj.reply.List = append(obj.reply.List, item)
 		// 整条记录定长 29 字节，顺序推进到下一条。
@@ -102,7 +112,7 @@ func (obj *GetSecurityListOld) ParseResponse(header *RespHeader, data []byte) er
 	return nil
 }
 
-// Response 返回已解析完成的旧版证券列表响应数据；未调用 ParseResponse 时返回空响应对象。
+// Response 返回已解析完成的旧版证券列表响应数据；未调用 `ParseResponse` 时返回空响应对象。
 func (obj *GetSecurityListOld) Response() *GetSecurityListOldReply {
 	return obj.reply
 }

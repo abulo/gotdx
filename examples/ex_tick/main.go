@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
-	// 日期参数为 0 时取当日分时，否则查询指定历史日期的分时。
+	// 参数 `category` 为美股类别，`code` 为 `TSLA`；`date` 传 0 时取当日分时，传 `YYYYMMDD` 整数
+	// 时走历史分时协议查询指定日期。
 	items, err := client.ExTickChart(types.ExCategoryUSStock, "TSLA", 0)
 	if err != nil {
 		log.Fatalln(err)
@@ -25,6 +26,7 @@ func main() {
 	}
 }
 
+// min 返回 `a`、`b` 中较小的整数，用于把截取条数限制在切片实际长度以内，避免越界。
 func min(a, b int) int {
 	if a < b {
 		return a

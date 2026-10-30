@@ -7,10 +7,14 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
-// ErrMarketCodeCount 表示传入的市场列表与证券代码列表长度不一致。
+// ErrMarketCodeCount 表示批量请求时传入的市场（或分类）列表与证券代码列表长度不一致，由
+// `makeStocks`、`makeExStocks` 在配对前校验长度时返回。
 var ErrMarketCodeCount = errors.New("market code count error")
 
 // execute 加锁执行一次协议请求，保证同一连接上的请求串行化，避免并发读写打乱协议帧。
+//
+// 参数 `protocol` 为待执行的协议对象，泛型 `T` 对应该协议的应答类型；返回协议解析完成后的应答对象
+// 与错误，收发或解析失败时返回 `T` 零值与该错误。
 func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -19,6 +23,9 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 }
 
 // executeLocked 在调用方已持锁的前提下执行协议流程：收发数据、解析响应、返回业务应答对象。
+//
+// 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；收发或 `ParseResponse` 失败时返回 `T`
+// 零值与错误，由上层决定是否重建连接。
 func (client *Client) executeLocked[T any](protocol proto.Protocol[T]) (T, error) {
 	var zero T
 
@@ -81,7 +88,10 @@ func makeFixed43(value string) [43]byte {
 	return out
 }
 
-// makeStocks 把市场与代码两两配对组装成主站证券列表；两者长度不一致时返回 ErrMarketCodeCount。
+// makeStocks 把市场与代码按下标两两配对组装成主站证券列表。
+//
+// 参数 `markets` 为市场代码序列，取值见 `types.Market*`；参数 `codes` 为六位证券代码序列，与市场
+// 序列按位置一一对应。两者长度不一致时返回 `nil` 与 `ErrMarketCodeCount`。
 func makeStocks(markets []uint8, codes []string) ([]proto.Stock, error) {
 	if len(markets) != len(codes) {
 		return nil, ErrMarketCodeCount
@@ -97,7 +107,11 @@ func makeStocks(markets []uint8, codes []string) ([]proto.Stock, error) {
 	return stocks, nil
 }
 
-// makeExStocks 把扩展分类与代码两两配对组装成扩展站证券列表；两者长度不一致时返回错误。
+// makeExStocks 把扩展分类与代码按下标两两配对组装成扩展站证券列表。
+//
+// 参数 `categories` 为扩展市场类别序列，取值见 `types.ExMarket*` 与 `types.ExCategory*`；参数
+// `codes` 为扩展站证券代码序列，与分类序列按位置一一对应。两者长度不一致时返回 `nil` 与
+// `ErrMarketCodeCount`。
 func makeExStocks(categories []uint8, codes []string) ([]proto.ExStock, error) {
 	if len(categories) != len(codes) {
 		return nil, ErrMarketCodeCount
@@ -113,8 +127,11 @@ func makeExStocks(categories []uint8, codes []string) ([]proto.ExStock, error) {
 	return stocks, nil
 }
 
-// quotesSortReverse 把布尔排序方向转换为协议方向码：代码排序不区分升降序，恒为 0；
-// 其余排序 1 为升序、2 为降序。
+// quotesSortReverse 把布尔排序方向转换为协议方向码。
+//
+// 参数 `sortType` 为排序字段编号，取值见 `types.Sort*`；参数 `reverse` 为 `true` 表示降序。代码排序
+// （`types.SortCode`）不区分升降序，恒返回 0；其余字段 `reverse` 为 `false` 返回 1（升序），为
+// `true` 返回 2（降序）。
 func quotesSortReverse(sortType uint16, reverse bool) uint16 {
 	if sortType == types.SortCode {
 		return 0

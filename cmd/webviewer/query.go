@@ -14,55 +14,55 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
-// methodParam 描述前端表单中单个查询参数的定义。
+// methodParam 描述前端表单中单个查询参数的定义，由前端据此渲染输入控件并回填默认值。
 type methodParam struct {
-	Key         string `json:"key"`                   // 参数名，与请求参数键一致
-	Label       string `json:"label"`                 // 表单显示名称
-	Type        string `json:"type"`                  // 参数类型标识
-	Default     string `json:"default"`               // 默认值字符串
-	Placeholder string `json:"placeholder,omitempty"` // 输入框占位提示
-	Help        string `json:"help,omitempty"`        // 参数补充说明
+	Key         string `json:"key"`                   // 参数名，与 `/api/query` 请求体 `params` 中的键一一对应
+	Label       string `json:"label"`                 // 表单展示名称，仅用于界面标签，不参与协议编码
+	Type        string `json:"type"`                  // 输入控件类型：`number` 数值框、`text` 单行文本、`textarea` 多行文本
+	Default     string `json:"default"`               // 参数默认值字符串；前端未填写时以该值提交，数值型也以字符串承载
+	Placeholder string `json:"placeholder,omitempty"` // 输入框占位提示文本，无占位提示时省略该字段
+	Help        string `json:"help,omitempty"`        // 参数补充说明，展示在输入控件旁，无说明时省略该字段
 }
 
 // methodDef 描述一个可在网页上调用的 `gotdx` 方法及其分组、目标连接与参数定义。
 type methodDef struct {
-	Key         string        `json:"key"`         // 方法唯一标识，请求体按该键匹配
-	Label       string        `json:"label"`       // 前端展示名称
-	Group       string        `json:"group"`       // 分组名称，决定前端排序与展示归类
-	Target      string        `json:"target"`      // 目标连接类型：`main`、`ex`、`mac`、`mac_ex`、`icfqs` 等
-	Description string        `json:"description"` // 方法功能说明
-	Params      []methodParam `json:"params"`      // 参数定义列表
+	Key         string        `json:"key"`         // 方法唯一标识，请求体 `method` 按该键在 `methodMap` 中匹配
+	Label       string        `json:"label"`       // 前端展示名称，用于方法列表与响应回显
+	Group       string        `json:"group"`       // 分组名称，决定前端排序与展示归类，取值见分组优先级定义
+	Target      string        `json:"target"`      // 目标连接类型：`main` 主站、`ex` 扩展站、`mac` MAC 主站、`mac_ex` MAC 扩展站、`icfqs` 资讯站
+	Description string        `json:"description"` // 方法功能说明，展示在方法详情中
+	Params      []methodParam `json:"params"`      // 参数定义列表，顺序即表单展示顺序；无参数时为空切片
 }
 
 // queryRequest 是 `/api/query` 接口收到的查询请求体。
 type queryRequest struct {
-	Method string            `json:"method"` // 方法标识，对应 `methodDef.Key`
-	Params map[string]string `json:"params"` // 字符串形式的查询参数
+	Method string            `json:"method"` // 方法标识，对应 `methodDef.Key`；为空或未登记时返回未知方法错误
+	Params map[string]string `json:"params"` // 字符串形式的查询参数，键为 `methodParam.Key`；缺失时按空映射处理
 }
 
 // queryResponse 是 `/api/query` 接口返回给前端的查询结果，包含元信息、表格列与行、耗时与原始响应。
 type queryResponse struct {
-	Method        string         `json:"method"`            // 方法标识
-	Label         string         `json:"label"`             // 方法展示名称
-	Group         string         `json:"group"`             // 分组名称
-	Target        string         `json:"target"`            // 目标连接类型
-	Description   string         `json:"description"`       // 方法功能说明
-	Request       map[string]any `json:"request"`           // 经规整后的请求参数视图
-	Columns       []string       `json:"columns"`           // 表格列名
-	Rows          [][]string     `json:"rows"`              // 表格数据行，受最大行数截断
-	TotalRows     int            `json:"total_rows"`        // 截断前的数据总行数
-	DisplayedRows int            `json:"displayed_rows"`    // 实际返回的数据行数
-	DurationMS    int64          `json:"duration_ms"`       // 本次查询耗时，单位毫秒
-	Warning       string         `json:"warning,omitempty"` // 结果附带的提示信息
-	Raw           any            `json:"raw,omitempty"`     // 协议原始响应，供前端折叠查看
+	Method        string         `json:"method"`            // 实际执行的方法标识，回显请求中的 `method`
+	Label         string         `json:"label"`             // 方法展示名称，取自 `methodDef.Label`
+	Group         string         `json:"group"`             // 方法分组名称，取自 `methodDef.Group`
+	Target        string         `json:"target"`            // 目标连接类型，取值同 `methodDef.Target`
+	Description   string         `json:"description"`       // 方法功能说明，取自 `methodDef.Description`
+	Request       map[string]any `json:"request"`           // 经规整后的请求参数视图，用于前端回显本次实际入参
+	Columns       []string       `json:"columns"`           // 表格列名，顺序与每行 `rows` 的列下标对应
+	Rows          [][]string     `json:"rows"`              // 表格数据行，受最大行数 1000 截断；每行为字符串单元格切片
+	TotalRows     int            `json:"total_rows"`        // 截断前的数据总行数，用于前端提示结果被裁剪
+	DisplayedRows int            `json:"displayed_rows"`    // 实际返回的数据行数，等于 `Rows` 的长度
+	DurationMS    int64          `json:"duration_ms"`       // 本次查询耗时，单位毫秒，从分发方法前开始计时
+	Warning       string         `json:"warning,omitempty"` // 结果附带的提示信息（如部分字段语义待确认），无提示时省略该字段
+	Raw           any            `json:"raw,omitempty"`     // 协议原始响应对象，供前端折叠查看；无原始响应时省略该字段
 }
 
-// queryPayload 是方法执行后返回给响应组装层的内部结果。
+// queryPayload 是方法执行后返回给响应组装层的内部结果，字段不直接对外序列化。
 type queryPayload struct {
-	columns []string   // 表格列名
-	rows    [][]string // 表格数据行
-	raw     any        // 协议原始响应
-	warning string     // 结果附带的提示信息
+	columns []string   // 表格列名，顺序与 `rows` 每行的列下标对应
+	rows    [][]string // 表格数据行，组装响应前可由 `limitRows` 截断
+	raw     any        // 协议原始响应对象，原样放入 `queryResponse.Raw`
+	warning string     // 结果附带的提示信息，原样放入 `queryResponse.Warning`；为空表示无提示
 }
 
 var methodDefs = []methodDef{
@@ -1477,10 +1477,12 @@ var methodDefs = []methodDef{
 	},
 }
 
-// methodMap 按方法标识索引方法定义，供请求分发时快速查找；`init` 阶段会重新生成以保证排序后一致。
+// methodMap 按方法标识索引方法定义，供请求分发时按 O(1) 快速查找；`init` 阶段会在方法定义
+// 排序后重新生成，保证运行期查找顺序与前端展示顺序一致。
 var methodMap = makeMethodMap(methodDefs)
 
-// `mainHosts`、`exHosts`、`macHosts`、`macExHosts` 分别缓存内置主站、扩展站、MAC 主站与 MAC 扩展站地址列表。
+// `mainHosts`、`exHosts`、`macHosts`、`macExHosts` 分别缓存内置主站、扩展站、MAC 主站与 MAC
+// 扩展站地址列表，进程启动时一次性取好，供各客户端工厂按首个地址主连、其余地址候选回退。
 var mainHosts = gotdx.MainHostAddresses()
 
 var exHosts = gotdx.ExHostAddresses()
@@ -1490,6 +1492,9 @@ var macHosts = gotdx.MACHostAddresses()
 var macExHosts = gotdx.MACExHostAddresses()
 
 // makeMethodMap 把方法定义列表转换为按 `Key` 索引的查询表。
+//
+// `defs` 为输入方法定义切片；返回映射以各定义的 `Key` 为键，重复键以后出现者覆盖前者；
+// 输入为空时返回空映射。
 func makeMethodMap(defs []methodDef) map[string]methodDef {
 	out := make(map[string]methodDef, len(defs))
 	for _, def := range defs {
@@ -1498,8 +1503,11 @@ func makeMethodMap(defs []methodDef) map[string]methodDef {
 	return out
 }
 
-// executeQuery 按方法标识查找定义并执行查询，统计耗时、截断表格行数后组装响应；
-// 方法未知或执行失败时返回错误，由 HTTP 层统一转为 400 响应。
+// executeQuery 按方法标识查找定义并执行查询，统计耗时、截断表格行数后组装响应。
+//
+// `req` 为 HTTP 层解析出的查询请求；`req.Params` 为 `nil` 时按空映射处理。方法未登记在
+// `methodMap` 中、参数解析失败或协议执行失败时返回错误，由 HTTP 层统一转为 400 响应；成功时
+// 返回包含列名、截断后数据行、耗时与原始响应的 `queryResponse`，表格行数上限为 1000。
 func executeQuery(req queryRequest) (*queryResponse, error) {
 	def, ok := methodMap[req.Method]
 	if !ok {
@@ -1536,8 +1544,13 @@ func executeQuery(req queryRequest) (*queryResponse, error) {
 	}, nil
 }
 
-// runMethod 是方法分发中枢：按 `def.Key` 进入对应分支，建立目标连接、解析参数、调用
-// `gotdx` 协议并把响应转换为表格载荷；第二个返回值是回显给前端的请求参数视图。
+// runMethod 是方法分发中枢：按 `def.Key` 进入对应分支，建立目标连接、解析参数、调用 `gotdx`
+// 协议并把响应转换为表格载荷。
+//
+// `def` 为待执行方法的定义；`params` 为前端提交的字符串参数映射，键对应 `methodParam.Key`。
+// 第一个返回值为表格载荷（列名、数据行、原始响应与提示）；第二个返回值是回显给前端的规整
+// 请求参数视图；连接握手失败、参数解析失败或协议执行失败时返回错误，载荷与请求视图置空。
+// 未登记的方法键落到默认分支并返回“暂不支持”错误。
 func runMethod(def methodDef, params map[string]string) (queryPayload, map[string]any, error) {
 	switch def.Key {
 	case "main_connect_info":
@@ -4241,7 +4254,10 @@ func runMethod(def methodDef, params map[string]string) (queryPayload, map[strin
 	}
 }
 
-// newMainClient 按内置主站地址池构造主站客户端，连接超时固定为 6 秒；尚未发起连接。
+// newMainClient 按内置主站地址池构造主站客户端，连接超时固定为 6 秒。
+//
+// 返回的客户端尚未发起连接：`mainHosts[0]` 作为主连地址，`mainHosts[1:]` 作为候选地址池，
+// 主连失败时由客户端内部依次回退；调用方需自行调用 `Connect` 建立连接。
 func newMainClient() *gotdx.Client {
 	return gotdx.New(
 		gotdx.WithTCPAddress(mainHosts[0]),
@@ -4250,7 +4266,10 @@ func newMainClient() *gotdx.Client {
 	)
 }
 
-// newExClient 按内置扩展站地址池构造扩展行情客户端，连接超时固定为 6 秒；尚未发起连接。
+// newExClient 按内置扩展站地址池构造扩展行情客户端，连接超时固定为 6 秒。
+//
+// 返回的客户端尚未发起连接：`exHosts[0]` 作为主连地址，`exHosts[1:]` 作为候选地址池；
+// 调用方需自行调用 `ConnectEx` 建立连接。
 func newExClient() *gotdx.Client {
 	return gotdx.NewEx(
 		gotdx.WithExTCPAddress(exHosts[0]),
@@ -4259,7 +4278,10 @@ func newExClient() *gotdx.Client {
 	)
 }
 
-// newMACClient 按内置 MAC 主站地址池构造 MAC 行情客户端，连接超时固定为 6 秒；尚未发起连接。
+// newMACClient 按内置 MAC 主站地址池构造 MAC 行情客户端，连接超时固定为 6 秒。
+//
+// 返回的客户端尚未发起连接：`macHosts[0]` 作为主连地址，`macHosts[1:]` 作为候选地址池；
+// 调用方需自行调用 `ConnectMAC` 建立连接。
 func newMACClient() *gotdx.Client {
 	return gotdx.NewMAC(
 		gotdx.WithMacTCPAddress(macHosts[0]),
@@ -4268,7 +4290,10 @@ func newMACClient() *gotdx.Client {
 	)
 }
 
-// newMACExClient 按内置 MAC 扩展站地址池构造 MAC 扩展行情客户端，连接超时固定为 6 秒；尚未发起连接。
+// newMACExClient 按内置 MAC 扩展站地址池构造 MAC 扩展行情客户端，连接超时固定为 6 秒。
+//
+// 返回的客户端尚未发起连接：`macExHosts[0]` 作为主连地址，`macExHosts[1:]` 作为候选地址池；
+// 调用方需自行调用 `ConnectMAC` 建立连接。
 func newMACExClient() *gotdx.Client {
 	return gotdx.NewMACEx(
 		gotdx.WithMacExTCPAddress(macExHosts[0]),
@@ -4277,7 +4302,10 @@ func newMACExClient() *gotdx.Client {
 	)
 }
 
-// withMainClient 建立主站连接、执行 `fn`，函数返回后断开连接；连接握手失败时直接返回错误。
+// withMainClient 建立主站连接、执行 `fn`，函数返回后断开连接。
+//
+// `fn` 接收已连接的主站客户端并返回表格载荷；握手失败时直接返回空载荷与错误，不进入 `fn`；
+// `fn` 返回的载荷与错误原样向上传递，连接在 `defer` 中统一断开。
 func withMainClient(fn func(*gotdx.Client) (queryPayload, error)) (queryPayload, error) {
 	client := newMainClient()
 	defer client.Disconnect()
@@ -4287,7 +4315,10 @@ func withMainClient(fn func(*gotdx.Client) (queryPayload, error)) (queryPayload,
 	return fn(client)
 }
 
-// withExClient 建立扩展站连接、执行 `fn`，函数返回后断开连接；连接握手失败时直接返回错误。
+// withExClient 建立扩展站连接、执行 `fn`，函数返回后断开连接。
+//
+// `fn` 接收已连接的扩展站客户端并返回表格载荷；握手失败时直接返回空载荷与错误，不进入 `fn`；
+// `fn` 返回的载荷与错误原样向上传递，连接在 `defer` 中统一断开。
 func withExClient(fn func(*gotdx.Client) (queryPayload, error)) (queryPayload, error) {
 	client := newExClient()
 	defer client.Disconnect()
@@ -4297,7 +4328,10 @@ func withExClient(fn func(*gotdx.Client) (queryPayload, error)) (queryPayload, e
 	return fn(client)
 }
 
-// withMACClient 建立 MAC 主站连接、执行 `fn`，函数返回后断开连接；连接握手失败时直接返回错误。
+// withMACClient 建立 MAC 主站连接、执行 `fn`，函数返回后断开连接。
+//
+// `fn` 接收已连接的 MAC 主站客户端并返回表格载荷；握手失败时直接返回空载荷与错误，不进入
+// `fn`；`fn` 返回的载荷与错误原样向上传递，连接在 `defer` 中统一断开。
 func withMACClient(fn func(*gotdx.Client) (queryPayload, error)) (queryPayload, error) {
 	client := newMACClient()
 	defer client.Disconnect()
@@ -4307,7 +4341,10 @@ func withMACClient(fn func(*gotdx.Client) (queryPayload, error)) (queryPayload, 
 	return fn(client)
 }
 
-// withMACExClient 建立 MAC 扩展站连接、执行 `fn`，函数返回后断开连接；连接握手失败时直接返回错误。
+// withMACExClient 建立 MAC 扩展站连接、执行 `fn`，函数返回后断开连接。
+//
+// `fn` 接收已连接的 MAC 扩展站客户端并返回表格载荷；握手失败时直接返回空载荷与错误，不进入
+// `fn`；`fn` 返回的载荷与错误原样向上传递，连接在 `defer` 中统一断开。
 func withMACExClient(fn func(*gotdx.Client) (queryPayload, error)) (queryPayload, error) {
 	client := newMACExClient()
 	defer client.Disconnect()
@@ -4317,7 +4354,10 @@ func withMACExClient(fn func(*gotdx.Client) (queryPayload, error)) (queryPayload
 	return fn(client)
 }
 
-// currentMainHost 返回主站客户端当前连接的地址，客户端为空时返回空字符串。
+// currentMainHost 返回主站客户端当前连接的 `host:port` 地址。
+//
+// `client` 为已构造的主站客户端；客户端为 `nil` 时返回空字符串，未连接时返回底层地址查询
+// 结果。
 func currentMainHost(client *gotdx.Client) string {
 	if client == nil {
 		return ""
@@ -4325,7 +4365,9 @@ func currentMainHost(client *gotdx.Client) string {
 	return client.CurrentAddress()
 }
 
-// currentExHost 返回扩展站客户端当前连接的地址，客户端为空时返回空字符串。
+// currentExHost 返回扩展站客户端当前连接的 `host:port` 地址。
+//
+// `client` 为已构造的扩展站客户端；客户端为 `nil` 时返回空字符串。
 func currentExHost(client *gotdx.Client) string {
 	if client == nil {
 		return ""
@@ -4333,7 +4375,9 @@ func currentExHost(client *gotdx.Client) string {
 	return client.CurrentAddress()
 }
 
-// currentMACHost 返回 MAC 主站客户端当前连接的地址，客户端为空时返回空字符串。
+// currentMACHost 返回 MAC 主站客户端当前连接的 `host:port` 地址。
+//
+// `client` 为已构造的 MAC 主站客户端；客户端为 `nil` 时返回空字符串。
 func currentMACHost(client *gotdx.Client) string {
 	if client == nil {
 		return ""
@@ -4341,7 +4385,9 @@ func currentMACHost(client *gotdx.Client) string {
 	return client.CurrentAddress()
 }
 
-// currentMACExHost 返回 MAC 扩展站客户端当前连接的地址，客户端为空时返回空字符串。
+// currentMACExHost 返回 MAC 扩展站客户端当前连接的 `host:port` 地址。
+//
+// `client` 为已构造的 MAC 扩展站客户端；客户端为 `nil` 时返回空字符串。
 func currentMACExHost(client *gotdx.Client) string {
 	if client == nil {
 		return ""
@@ -4349,7 +4395,9 @@ func currentMACExHost(client *gotdx.Client) string {
 	return client.CurrentAddress()
 }
 
-// rowsFromHostInfos 把内置主机条目转换为名称、IP、端口与 `host:port` 四列表格行。
+// rowsFromHostInfos 把内置主机条目转换为表格行，每行依次为名称、IP、端口与 `host:port` 四列。
+//
+// `items` 为待转换主机条目切片；返回行数与输入条目数一致，输入为空时返回非 `nil` 的空切片。
 func rowsFromHostInfos(items []gotdx.HostInfo) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4363,8 +4411,11 @@ func rowsFromHostInfos(items []gotdx.HostInfo) [][]string {
 	return rows
 }
 
-// rowsFromHostProbeResults 把探测结果转换为名称、地址、延迟、可达性与错误信息表格行；
-// 不可达条目延迟列留空。
+// rowsFromHostProbeResults 把探测结果转换为表格行，每行依次为名称、地址、延迟（毫秒）、
+// 可达性与错误信息五列。
+//
+// `items` 为待转换探测结果切片；仅可达条目的延迟列填入毫秒整数，不可达条目延迟列留空，
+// 错误列填入拨号失败原因。
 func rowsFromHostProbeResults(items []gotdx.HostProbeResult) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4384,6 +4435,9 @@ func rowsFromHostProbeResults(items []gotdx.HostProbeResult) [][]string {
 }
 
 // parseCodeList 按逗号、换行、回车、制表符与空白拆分代码字符串，忽略空片段。
+//
+// `value` 为前端提交的单值或多值代码字符串；返回去除首尾空白后的非空片段切片，输入为空时
+// 返回非 `nil` 的空切片。
 func parseCodeList(value string) []string {
 	parts := strings.FieldsFunc(value, func(r rune) bool {
 		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
@@ -4398,7 +4452,10 @@ func parseCodeList(value string) []string {
 	return out
 }
 
-// parseUint8List 把代码列表对应的市场类别字符串解析为 `uint8` 切片；任一片段超出 `uint8` 范围时返回错误。
+// parseUint8List 把市场类别字符串解析为 `uint8` 切片，按十进制无符号整数解析。
+//
+// `value` 为逗号或空白分隔的类别编号字符串，拆分规则同 `parseCodeList`；任一片段不是十进制
+// 整数或超出 `uint8` 取值范围（0 至 255）时返回错误，成功时返回与片段顺序一致的编号切片。
 func parseUint8List(value string) ([]uint8, error) {
 	parts := parseCodeList(value)
 	out := make([]uint8, 0, len(parts))
@@ -4412,8 +4469,11 @@ func parseUint8List(value string) ([]uint8, error) {
 	return out, nil
 }
 
-// expandUint8List 把单值列表复制到目标长度；长度已一致时原样返回，长度不一致且不是单值
-// 广播场景时返回数量不匹配错误，`label` 用于错误提示。
+// expandUint8List 把单值市场类别列表广播补齐到与代码列表相同的长度。
+//
+// `values` 为类别编号切片；`targetLen` 为代码列表长度。目标长度为 0 时原样返回；两者长度
+// 一致时原样返回；`values` 仅含一个元素且 `targetLen` 大于 1 时把该值复制填满；其余长度
+// 组合视为数量不匹配并返回错误。`label` 为类别名称，仅用于错误提示文案。
 func expandUint8List(values []uint8, targetLen int, label string) ([]uint8, error) {
 	if targetLen == 0 {
 		return values, nil
@@ -4431,7 +4491,10 @@ func expandUint8List(values []uint8, targetLen int, label string) ([]uint8, erro
 	return nil, fmt.Errorf("%s 数量必须和代码数量一致", label)
 }
 
-// parseUint8Value 读取指定参数键并按 `uint8` 解析；参数缺失或为空时使用默认值 `def`。
+// parseUint8Value 从参数映射中读取指定键并按 `uint8` 十进制整数解析。
+//
+// `params` 为前端提交的字符串参数映射；`key` 为参数键；`def` 为参数缺失或去除空白后为空时
+// 使用的默认值。数值超出 0 至 255 范围或不是合法十进制整数时返回错误。
 func parseUint8Value(params map[string]string, key string, def uint8) (uint8, error) {
 	value := valueOrDefault(params, key, strconv.FormatUint(uint64(def), 10))
 	v, err := strconv.ParseUint(strings.TrimSpace(value), 10, 8)
@@ -4441,7 +4504,10 @@ func parseUint8Value(params map[string]string, key string, def uint8) (uint8, er
 	return uint8(v), nil
 }
 
-// parseUint16Value 读取指定参数键并按 `uint16` 解析；参数缺失或为空时使用默认值 `def`。
+// parseUint16Value 从参数映射中读取指定键并按 `uint16` 十进制整数解析。
+//
+// `params` 为前端提交的字符串参数映射；`key` 为参数键；`def` 为参数缺失或去除空白后为空时
+// 使用的默认值。数值超出 0 至 65535 范围或不是合法十进制整数时返回错误。
 func parseUint16Value(params map[string]string, key string, def uint16) (uint16, error) {
 	value := valueOrDefault(params, key, strconv.FormatUint(uint64(def), 10))
 	v, err := strconv.ParseUint(strings.TrimSpace(value), 10, 16)
@@ -4451,7 +4517,10 @@ func parseUint16Value(params map[string]string, key string, def uint16) (uint16,
 	return uint16(v), nil
 }
 
-// parseUint32Value 读取指定参数键并按 `uint32` 解析；参数缺失或为空时使用默认值 `def`。
+// parseUint32Value 从参数映射中读取指定键并按 `uint32` 十进制整数解析。
+//
+// `params` 为前端提交的字符串参数映射；`key` 为参数键；`def` 为参数缺失或去除空白后为空时
+// 使用的默认值。数值超出 `uint32` 取值范围或不是合法十进制整数时返回错误。
 func parseUint32Value(params map[string]string, key string, def uint32) (uint32, error) {
 	value := valueOrDefault(params, key, strconv.FormatUint(uint64(def), 10))
 	v, err := strconv.ParseUint(strings.TrimSpace(value), 10, 32)
@@ -4461,8 +4530,11 @@ func parseUint32Value(params map[string]string, key string, def uint32) (uint32,
 	return uint32(v), nil
 }
 
-// parseBoolValue 读取参数键并识别常见布尔写法（`1`、`true`、`yes`、`y`、`on` 为真，
-// `0`、`false`、`no`、`n`、`off`、空 为假）；无法识别时返回错误，缺失或为空时使用默认值 `def`。
+// parseBoolValue 从参数映射中读取指定键并识别常见布尔写法。
+//
+// `params` 为前端提交的字符串参数映射；`key` 为参数键；`def` 为参数缺失或为空时使用的默认值。
+// 不区分大小写，`1`、`true`、`yes`、`y`、`on` 解析为真，`0`、`false`、`no`、`n`、`off`、
+// 空串解析为假；其余写法无法识别时返回错误。
 func parseBoolValue(params map[string]string, key string, def bool) (bool, error) {
 	value := strings.TrimSpace(valueOrDefault(params, key, strconv.FormatBool(def)))
 	switch strings.ToLower(value) {
@@ -4475,7 +4547,10 @@ func parseBoolValue(params map[string]string, key string, def bool) (bool, error
 	}
 }
 
-// valueOrDefault 读取参数键；参数缺失或去除空白后为空时返回默认值 `def`。
+// valueOrDefault 读取参数映射中指定键的字符串值。
+//
+// `params` 为前端提交的参数映射；`key` 为参数键；`def` 为回退默认值。参数键不存在或取值
+// 去除首尾空白后为空时返回 `def`，否则返回去除空白前的原始字符串。
 func valueOrDefault(params map[string]string, key string, def string) string {
 	value, ok := params[key]
 	if !ok || strings.TrimSpace(value) == "" {
@@ -4484,7 +4559,10 @@ func valueOrDefault(params map[string]string, key string, def string) string {
 	return value
 }
 
-// limitRows 把表格行数截断到 `max` 以内；未超限时原样返回原切片。
+// limitRows 把表格行数截断到 `max` 行以内，避免超长结果撑爆前端表格。
+//
+// `rows` 为原始数据行切片；`max` 为允许返回的最大行数。未超限时原样返回原切片，超限时返回
+// 前 `max` 行的切片视图，不复制行内容。
 func limitRows(rows [][]string, max int) [][]string {
 	if len(rows) <= max {
 		return rows
@@ -4492,7 +4570,11 @@ func limitRows(rows [][]string, max int) [][]string {
 	return rows[:max]
 }
 
-// rawTextPreview 为文本响应生成不超过 4000 字节的预览对象，附带总长度与是否截断标记。
+// rawTextPreview 为文本响应生成预览对象，附带总长度与是否截断标记。
+//
+// `content` 为待预览文本；预览文本上限为 4000 字节，未超限时 `preview` 为全文、
+// `truncated` 为 `false`，超限时 `preview` 为前 4000 字节、`truncated` 为 `true`，`length`
+// 始终为原始字节长度。
 func rawTextPreview(content string) map[string]any {
 	const maxBytes = 4000
 	if len(content) <= maxBytes {
@@ -4509,7 +4591,10 @@ func rawTextPreview(content string) map[string]any {
 	}
 }
 
-// rawBytesPreview 为二进制响应生成长度与十六进制预览对象，十六进制内容最长展示 512 字符。
+// rawBytesPreview 为二进制响应生成预览对象，包含字节长度与十六进制预览文本。
+//
+// `content` 为待预览字节切片；`length` 为原始字节数，`hex_preview` 为小写十六进制文本，
+// 最长展示 512 个十六进制字符。
 func rawBytesPreview(content []byte) map[string]any {
 	return map[string]any{
 		"length":      len(content),
@@ -4517,7 +4602,11 @@ func rawBytesPreview(content []byte) map[string]any {
 	}
 }
 
-// rawFullFilePreview 把下载文件按 GBK 解码为文本，同时提供长度、十六进制预览与文本预览。
+// rawFullFilePreview 为下载完成的整文件生成预览对象，同时提供字节长度、十六进制预览与解码后
+// 文本预览。
+//
+// `content` 为下载得到的文件原始字节；`length` 为字节数，`hex_preview` 最长 512 个十六进制
+// 字符，`text_preview` 为按协议编码解码后的文本、最长 2000 字符。
 func rawFullFilePreview(content []byte) map[string]any {
 	text := proto.Utf8ToGbk(content)
 	return map[string]any{
@@ -4527,9 +4616,11 @@ func rawFullFilePreview(content []byte) map[string]any {
 	}
 }
 
-// parseMACBoardMembersQuotesFieldBitmap 解析 MAC 板块成员行情的字段位图：
-// 空值或 `default` 使用内置默认位图，`full` 使用全字段位图，其余输入按 40 位十六进制解码；
-// 长度或格式非法时返回错误。
+// parseMACBoardMembersQuotesFieldBitmap 解析 MAC 板块成员行情的字段位图，返回 20 字节位图。
+//
+// `value` 为前端提交的位图选择：空串或 `default`（不区分大小写）使用内置默认位图，`full`
+// 使用全字段位图；其余输入先去除 `0x` 前缀与空格、逗号、下划线，再按 40 位十六进制字符
+// 解码为 20 字节。去除辅助字符后长度不是 40 位，或十六进制格式非法时返回错误。
 func parseMACBoardMembersQuotesFieldBitmap(value string) ([20]byte, error) {
 	text := strings.TrimSpace(value)
 	switch strings.ToLower(text) {
@@ -4555,7 +4646,10 @@ func parseMACBoardMembersQuotesFieldBitmap(value string) ([20]byte, error) {
 	return bitmap, nil
 }
 
-// rowsFromRawReply 把未解析的原始协议响应转换为长度与十六进制预览两行表格。
+// rowsFromRawReply 把未解析的原始协议响应转换为两行键值表格：响应字节长度与截断后的十六进制
+// 预览。
+//
+// `reply` 为原始响应对象，为 `nil` 时返回 `nil`；十六进制预览最长展示 512 个字符。
 func rowsFromRawReply(reply *proto.RawDataReply) [][]string {
 	if reply == nil {
 		return nil
@@ -4567,6 +4661,8 @@ func rowsFromRawReply(reply *proto.RawDataReply) [][]string {
 }
 
 // rowsFromQuoteDetail 转换盘口详细行情条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromQuoteDetail(items []proto.SecurityQuote) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4587,6 +4683,8 @@ func rowsFromQuoteDetail(items []proto.SecurityQuote) [][]string {
 }
 
 // rowsFromQuoteList 转换排序行情快照条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromQuoteList(items []proto.QuoteListItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4606,6 +4704,8 @@ func rowsFromQuoteList(items []proto.QuoteListItem) [][]string {
 }
 
 // rowsFromSecurityList 转换证券代码与名称列表条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromSecurityList(items []proto.Security) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4621,6 +4721,8 @@ func rowsFromSecurityList(items []proto.Security) [][]string {
 }
 
 // rowsFromSecurityFeature452 转换证券扩展信息条目为表格行；P1、P2 字段语义待确认。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromSecurityFeature452(items []proto.SecurityFeature452Item) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4635,6 +4737,8 @@ func rowsFromSecurityFeature452(items []proto.SecurityFeature452Item) [][]string
 }
 
 // rowsFromSecurityBars 转换股票 K 线条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromSecurityBars(items []proto.SecurityBar) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4656,6 +4760,8 @@ func rowsFromSecurityBars(items []proto.SecurityBar) [][]string {
 }
 
 // rowsFromMinuteTimeData 转换当日分时图条目为表格行，首列为分时点序号。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMinuteTimeData(items []proto.MinuteTimeData) [][]string {
 	rows := make([][]string, 0, len(items))
 	for i, item := range items {
@@ -4670,6 +4776,8 @@ func rowsFromMinuteTimeData(items []proto.MinuteTimeData) [][]string {
 }
 
 // rowsFromHistoryMinuteTimeData 转换历史分时图条目为表格行，首列为分时点序号。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromHistoryMinuteTimeData(items []proto.HistoryMinuteTimeData) [][]string {
 	rows := make([][]string, 0, len(items))
 	for i, item := range items {
@@ -4684,6 +4792,8 @@ func rowsFromHistoryMinuteTimeData(items []proto.HistoryMinuteTimeData) [][]stri
 }
 
 // rowsFromTransaction 转换当日逐笔成交条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromTransaction(items []proto.TransactionData) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4699,6 +4809,8 @@ func rowsFromTransaction(items []proto.TransactionData) [][]string {
 }
 
 // rowsFromHistoryTransaction 转换历史逐笔成交条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromHistoryTransaction(items []proto.HistoryTransactionData) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4714,6 +4826,8 @@ func rowsFromHistoryTransaction(items []proto.HistoryTransactionData) [][]string
 }
 
 // rowsFromHistoryTransactionWithTrans 转换带买卖方向的历史逐笔成交条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromHistoryTransactionWithTrans(items []proto.HistoryTransactionDataWithTrans) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4729,6 +4843,8 @@ func rowsFromHistoryTransactionWithTrans(items []proto.HistoryTransactionDataWit
 }
 
 // rowsFromEncryptedQuotes 转换加密行情快照条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromEncryptedQuotes(items []proto.EncryptedQuoteItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4748,7 +4864,10 @@ func rowsFromEncryptedQuotes(items []proto.EncryptedQuoteItem) [][]string {
 	return rows
 }
 
-// rowsFromAnnouncement 转换服务商公告为键值表格行；无内容时仅输出存在标记。
+// rowsFromAnnouncement 把服务商公告响应转换为键值表格行；`item` 为 `nil` 时返回 `nil`。
+//
+// 公告无内容（`HasContent` 为 `false`）时仅输出存在标记一行；有内容时追加失效日期、标题、
+// 作者与正文四行键值。
 func rowsFromAnnouncement(item *proto.AnnouncementReply) [][]string {
 	if item == nil {
 		return nil
@@ -4765,7 +4884,10 @@ func rowsFromAnnouncement(item *proto.AnnouncementReply) [][]string {
 	return rows
 }
 
-// rowsFromServerInfo 转换主站服务信息为键值表格行；`unknown` 系列字段语义待确认。
+// rowsFromServerInfo 把主站服务信息响应转换为键值表格行；`item` 为 `nil` 时返回 `nil`。
+//
+// `unknown1`、`unknown2`、`unknown3` 等字段的具体业务含义语义待确认，按原始数值或片段
+// 拼接展示。
 func rowsFromServerInfo(item *proto.InfoReply) [][]string {
 	if item == nil {
 		return nil
@@ -4785,6 +4907,8 @@ func rowsFromServerInfo(item *proto.InfoReply) [][]string {
 }
 
 // rowsFromHistoryOrders 转换历史委托档位条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromHistoryOrders(items []proto.HistoryOrderData) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4798,6 +4922,8 @@ func rowsFromHistoryOrders(items []proto.HistoryOrderData) [][]string {
 }
 
 // rowsFromAuction 转换集合竞价记录为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromAuction(items []proto.AuctionData) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4813,6 +4939,10 @@ func rowsFromAuction(items []proto.AuctionData) [][]string {
 }
 
 // rowsFromTopBoard 把九类排行榜依次展平为表格行，首列标注榜单类别名称。
+//
+// `reply` 为排行榜响应，依次处理涨幅、跌幅、振幅、涨速、跌速、量比、正委托比、负委托比、
+// 换手率九个列表；每行其余列为市场编号、代码、价格与榜单数值。各列表为空时对应榜单不产生
+// 行，全部为空则返回空切片。
 func rowsFromTopBoard(reply *proto.GetTopBoardReply) [][]string {
 	type namedList struct {
 		name  string
@@ -4845,6 +4975,8 @@ func rowsFromTopBoard(reply *proto.GetTopBoardReply) [][]string {
 }
 
 // rowsFromUnusual 转换异动监控记录为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromUnusual(items []proto.UnusualData) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4861,7 +4993,10 @@ func rowsFromUnusual(items []proto.UnusualData) [][]string {
 	return rows
 }
 
-// rowsFromVolumeProfile 转换价位成交分布为表格行，末列附带整体换手率。
+// rowsFromVolumeProfile 把价位成交分布条目转换为表格行，末列附带整体换手率。
+//
+// `items` 为价位分布条目切片，每行依次为价位、成交量、主动买量、主动卖量；`turnover` 为
+// 响应返回的整体换手率（比率口径，单位随协议约定，语义待确认），同一数值附加到每一分布行末尾。
 func rowsFromVolumeProfile(items []proto.VolumeProfileItem, turnover float64) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4876,7 +5011,10 @@ func rowsFromVolumeProfile(items []proto.VolumeProfileItem, turnover float64) []
 	return rows
 }
 
-// rowsFromCompanyBundle 聚合公司信息章节、除权除息计数与财务摘要为表格行。
+// rowsFromCompanyBundle 聚合公司信息章节、除权除息计数与财务摘要为键值表格行。
+//
+// `bundle` 为高层方法聚合出的公司信息包：先逐章节输出章节名与截断正文（预览上限 120 字符），
+// 再输出除权除息条目总数；财务摘要非空时追加一行更新日期、营业收入与净利润摘要。
 func rowsFromCompanyBundle(bundle *gotdx.CompanyInfoBundle) [][]string {
 	rows := make([][]string, 0, len(bundle.Sections)+2)
 	for _, section := range bundle.Sections {
@@ -4889,7 +5027,10 @@ func rowsFromCompanyBundle(bundle *gotdx.CompanyInfoBundle) [][]string {
 	return rows
 }
 
-// rowsFromCompanyCategories 转换 F10 章节目录条目为表格行。
+// rowsFromCompanyCategories 把 F10 章节目录条目转换为表格行。
+//
+// `items` 为目录条目切片，每行依次为章节名称、文件名、正文起始字节偏移与正文长度；文件名、
+// 偏移与长度用于后续按条目读取章节正文。
 func rowsFromCompanyCategories(items []proto.CompanyCategory) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4903,7 +5044,10 @@ func rowsFromCompanyCategories(items []proto.CompanyCategory) [][]string {
 	return rows
 }
 
-// rowsFromFinanceInfo 转换财务信息为键值表格行。
+// rowsFromFinanceInfo 把财务信息响应转换为键值表格行；`item` 为 `nil` 时返回 `nil`。
+//
+// 行内依次输出代码、更新日期、上市日期、股本、每股指标、资产负债与利润等字段；金额类字段按
+// 两位小数展示，每股收益与每股净资产按四位小数展示。
 func rowsFromFinanceInfo(item *proto.GetFinanceInfoReply) [][]string {
 	if item == nil {
 		return nil
@@ -4929,6 +5073,8 @@ func rowsFromFinanceInfo(item *proto.GetFinanceInfoReply) [][]string {
 }
 
 // rowsFromXDXR 转换除权除息历史记录为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromXDXR(items []proto.XDXRItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4947,7 +5093,10 @@ func rowsFromXDXR(items []proto.XDXRItem) [][]string {
 	return rows
 }
 
-// rowsFromFileMeta 转换文件元信息为键值表格行；未知字段语义待确认。
+// rowsFromFileMeta 把文件元信息响应转换为键值表格行；`item` 为 `nil` 时返回 `nil`。
+//
+// `size` 为文件字节长度，`hash_value` 为定长校验值的十六进制文本；`unknown1`、`unknown2`
+// 字段业务含义语义待确认，按原始数值展示。
 func rowsFromFileMeta(item *proto.GetFileMetaReply) [][]string {
 	if item == nil {
 		return nil
@@ -4961,6 +5110,8 @@ func rowsFromFileMeta(item *proto.GetFileMetaReply) [][]string {
 }
 
 // rowsFromBlockFlat 转换扁平化板块成分条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromBlockFlat(items []gotdx.BlockFlatItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -4975,6 +5126,8 @@ func rowsFromBlockFlat(items []gotdx.BlockFlatItem) [][]string {
 }
 
 // rowsFromBlockGroups 转换板块分组为表格行，成分代码仅展示前 5 个。
+//
+// `groups` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromBlockGroups(groups []gotdx.BlockGroup) [][]string {
 	rows := make([][]string, 0, len(groups))
 	for _, group := range groups {
@@ -4989,6 +5142,8 @@ func rowsFromBlockGroups(groups []gotdx.BlockGroup) [][]string {
 }
 
 // rowsFromExQuotes 转换扩展市场行情条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExQuotes(items []proto.ExQuoteItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5007,6 +5162,8 @@ func rowsFromExQuotes(items []proto.ExQuoteItem) [][]string {
 }
 
 // rowsFromExCategoryList 转换扩展市场品种分类条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExCategoryList(items []proto.ExCategoryItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5024,7 +5181,10 @@ func rowsFromExCategoryList(items []proto.ExCategoryItem) [][]string {
 	return rows
 }
 
-// rowsFromExList 转换扩展市场标的列表；`Desc` 为变长附加字段，缺失时对应列留空。
+// rowsFromExList 把扩展市场标的列表条目转换为表格行。
+//
+// `items` 为标的条目切片；`Desc` 为变长附加数值数组，最多展示前三项，缺失的对应列留空。每行
+// 依次为市场编号、类别编号、代码、名称与三个附加数值列。
 func rowsFromExList(items []proto.ExListItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5052,6 +5212,8 @@ func rowsFromExList(items []proto.ExListItem) [][]string {
 }
 
 // rowsFromExListExtra 转换扩展市场试验列表条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExListExtra(items []proto.ExExtraListItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5070,6 +5232,8 @@ func rowsFromExListExtra(items []proto.ExExtraListItem) [][]string {
 }
 
 // rowsFromExKLine 转换扩展市场 K 线条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExKLine(items []proto.ExKLineItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5087,7 +5251,11 @@ func rowsFromExKLine(items []proto.ExKLineItem) [][]string {
 	return rows
 }
 
-// rowsFromExExperiment2487 转换试验报价 `0x2487` 响应为键值表格行；尾部十六进制内容截断预览。
+// rowsFromExExperiment2487 把试验报价 `0x2487` 响应转换为键值表格行；`item` 为 `nil` 时
+// 返回 `nil`。
+//
+// 行情字段含义按通用报价口径展示，`u1` 等无明确命名的字段语义待确认；`tail_hex` 为响应尾部
+// 原始字节的十六进制预览，最长 256 字符。
 func rowsFromExExperiment2487(item *proto.ExExperiment2487Reply) [][]string {
 	if item == nil {
 		return nil
@@ -5111,6 +5279,8 @@ func rowsFromExExperiment2487(item *proto.ExExperiment2487Reply) [][]string {
 }
 
 // rowsFromExExperiment2488 转换试验报价 `0x2488` 条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExExperiment2488(items []proto.ExExperiment2488Item) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5127,6 +5297,8 @@ func rowsFromExExperiment2488(items []proto.ExExperiment2488Item) [][]string {
 }
 
 // rowsFromExTick 转换扩展市场分时图条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExTick(items []proto.ExTickChartData) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5141,6 +5313,8 @@ func rowsFromExTick(items []proto.ExTickChartData) [][]string {
 }
 
 // rowsFromExHistoryTransaction 转换扩展市场历史逐笔成交条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExHistoryTransaction(items []proto.ExHistoryTransactionItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5155,6 +5329,8 @@ func rowsFromExHistoryTransaction(items []proto.ExHistoryTransactionItem) [][]st
 }
 
 // rowsFromExBoardList 转换扩展市场板块榜单条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExBoardList(items []proto.ExBoardListItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5173,6 +5349,8 @@ func rowsFromExBoardList(items []proto.ExBoardListItem) [][]string {
 }
 
 // rowsFromExMapping2562 转换扩展市场代码映射条目为表格行；未知字段语义待确认。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromExMapping2562(items []proto.ExMapping2562Item) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5196,6 +5374,8 @@ func rowsFromExMapping2562(items []proto.ExMapping2562Item) [][]string {
 }
 
 // rowsFromMACBoardList 转换 MAC 板块榜单条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMACBoardList(items []proto.MACBoardListItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5214,6 +5394,8 @@ func rowsFromMACBoardList(items []proto.MACBoardListItem) [][]string {
 }
 
 // rowsFromMACBoardMembers 转换 MAC 板块成员基础信息为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMACBoardMembers(items []proto.MACBoardMemberItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5227,6 +5409,8 @@ func rowsFromMACBoardMembers(items []proto.MACBoardMemberItem) [][]string {
 }
 
 // rowsFromMACBoardMemberQuotes 转换 MAC 板块成员行情条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMACBoardMemberQuotes(items []proto.MACBoardMemberQuoteItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5244,8 +5428,10 @@ func rowsFromMACBoardMemberQuotes(items []proto.MACBoardMemberQuoteItem) [][]str
 	return rows
 }
 
-// columnsFromMACBoardMemberQuotesDynamic 生成动态板块行情列名：市场、代码、名称之后
-// 按服务端 ActiveFields 顺序拼接动态字段名。
+// columnsFromMACBoardMemberQuotesDynamic 生成动态板块行情列名；`reply` 为 `nil` 时返回 `nil`。
+//
+// 前三个固定列为市场、代码、名称，其后按服务端 `ActiveFields` 给出的字段定义顺序拼接动态
+// 字段名，列顺序与 `rowsFromMACBoardMemberQuotesDynamic` 输出的行内值顺序一一对应。
 func columnsFromMACBoardMemberQuotesDynamic(reply *proto.MACBoardMembersQuotesDynamicReply) []string {
 	if reply == nil {
 		return nil
@@ -5257,7 +5443,11 @@ func columnsFromMACBoardMemberQuotesDynamic(reply *proto.MACBoardMembersQuotesDy
 	return columns
 }
 
-// rowsFromMACBoardMemberQuotesDynamic 按动态字段定义顺序取出每只股票的字段值并格式化。
+// rowsFromMACBoardMemberQuotesDynamic 把动态板块成员行情响应转换为表格行；`reply` 为 `nil`
+// 时返回 `nil`。
+//
+// 每行先输出市场、代码、名称三个固定值，再按 `ActiveFields` 顺序从成员 `Values` 映射中取出
+// 对应字段值并格式化；映射中缺失的字段输出空字符串。
 func rowsFromMACBoardMemberQuotesDynamic(reply *proto.MACBoardMembersQuotesDynamicReply) [][]string {
 	if reply == nil {
 		return nil
@@ -5277,7 +5467,9 @@ func rowsFromMACBoardMemberQuotesDynamic(reply *proto.MACBoardMembersQuotesDynam
 	return rows
 }
 
-// columnsFromMACSymbolQuotes 生成 MAC 标的行情列名：市场、代码、名称之后拼接动态字段名。
+// columnsFromMACSymbolQuotes 生成 MAC 标的行情列名；`reply` 为 `nil` 时返回 `nil`。
+//
+// 前三个固定列为市场、代码、名称，其后按服务端 `ActiveFields` 顺序拼接动态字段名。
 func columnsFromMACSymbolQuotes(reply *proto.MACSymbolQuotesReply) []string {
 	if reply == nil {
 		return nil
@@ -5289,7 +5481,10 @@ func columnsFromMACSymbolQuotes(reply *proto.MACSymbolQuotesReply) []string {
 	return columns
 }
 
-// rowsFromMACSymbolQuotes 按动态字段定义顺序取出每只标的的字段值并格式化。
+// rowsFromMACSymbolQuotes 把 MAC 标的动态行情响应转换为表格行；`reply` 为 `nil` 时返回 `nil`。
+//
+// 每行先输出市场、代码、名称三个固定值，再按 `ActiveFields` 顺序从标的 `Values` 映射中取出
+// 对应字段值并格式化；映射中缺失的字段输出空字符串。
 func rowsFromMACSymbolQuotes(reply *proto.MACSymbolQuotesReply) [][]string {
 	if reply == nil {
 		return nil
@@ -5310,6 +5505,8 @@ func rowsFromMACSymbolQuotes(reply *proto.MACSymbolQuotesReply) [][]string {
 }
 
 // rowsFromMACDynamicFieldDefs 转换 MAC 动态字段定义为表格行。
+//
+// `fields` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMACDynamicFieldDefs(fields []proto.MACDynamicFieldDef) [][]string {
 	rows := make([][]string, 0, len(fields))
 	for _, field := range fields {
@@ -5324,6 +5521,8 @@ func rowsFromMACDynamicFieldDefs(fields []proto.MACDynamicFieldDef) [][]string {
 }
 
 // rowsFromMACQuoteChart 转换 MAC 商品分时图条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMACQuoteChart(items []proto.MACQuoteChartItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5339,6 +5538,8 @@ func rowsFromMACQuoteChart(items []proto.MACQuoteChartItem) [][]string {
 }
 
 // rowsFromMACTransactions 转换 MAC 逐笔成交条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMACTransactions(items []proto.MACTransactionItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5353,7 +5554,10 @@ func rowsFromMACTransactions(items []proto.MACTransactionItem) [][]string {
 	return rows
 }
 
-// rowsFromMACCapitalFlow 转换 MAC 资金流响应为单行汇总表格。
+// rowsFromMACCapitalFlow 把 MAC 资金流响应转换为单行汇总表格；`reply` 为 `nil` 时返回 `nil`。
+//
+// 行内依次为市场编号、查询说明、附加文本、当日主力/散户流入流出与净流入，以及五日主力、超大、
+// 大、中、小单净额等汇总数值；金额单位随协议约定，语义待确认。
 func rowsFromMACCapitalFlow(reply *proto.MACCapitalFlowReply) [][]string {
 	if reply == nil {
 		return nil
@@ -5378,7 +5582,11 @@ func rowsFromMACCapitalFlow(reply *proto.MACCapitalFlowReply) [][]string {
 	}}
 }
 
-// rowsFromMACServerInfo 转换 MAC 服务端信息为键值表格行；部分参数字段语义待确认。
+// rowsFromMACServerInfo 把 MAC 服务端信息响应转换为键值表格行；`reply` 为 `nil` 时返回 `nil`。
+//
+// 两段交易时段分别经 `formatMACTradingSessions` 拼接为可读文本；`TS1` 至 `TS3`、
+// `MarketParam1`、`MarketParam2` 等参数字段的具体业务含义语义待确认，按原始数值或十六进制
+// 文本展示。
 func rowsFromMACServerInfo(reply *proto.MACServerInfoReply) [][]string {
 	if reply == nil {
 		return nil
@@ -5402,7 +5610,10 @@ func rowsFromMACServerInfo(reply *proto.MACServerInfoReply) [][]string {
 	}
 }
 
-// formatMACTradingSessions 把交易时段列表拼接为 `开盘-收盘` 分号分隔的文本；空时段被跳过。
+// formatMACTradingSessions 把交易时段列表拼接为可读文本，时段之间以分号加空格分隔。
+//
+// `sessions` 为时段切片；每个时段输出 `开盘时间-收盘时间`，开盘与收盘分钟数同时为 0 的空时段
+// 被跳过；全部为空时段时返回空字符串。
 func formatMACTradingSessions(sessions []proto.MACTradingSession) string {
 	parts := make([]string, 0, len(sessions))
 	for _, session := range sessions {
@@ -5414,7 +5625,8 @@ func formatMACTradingSessions(sessions []proto.MACTradingSession) string {
 	return strings.Join(parts, "; ")
 }
 
-// rowsFromMACKLineOffset 转换偏移 K 线响应为总量与返回条数两行表格。
+// rowsFromMACKLineOffset 把偏移 K 线响应转换为两行键值表格：总量与本次返回条数；`reply`
+// 为 `nil` 时返回 `nil`。
 func rowsFromMACKLineOffset(reply *proto.MACKLineOffsetReply) [][]string {
 	if reply == nil {
 		return nil
@@ -5425,7 +5637,9 @@ func rowsFromMACKLineOffset(reply *proto.MACKLineOffsetReply) [][]string {
 	}
 }
 
-// rowsFromMACFileList 转换 MAC 文件列表元信息为单行表格。
+// rowsFromMACFileList 把 MAC 文件列表元信息响应转换为单行表格；`reply` 为 `nil` 时返回 `nil`。
+//
+// 行内依次为下载偏移、文件字节长度、标志位与校验哈希文本。
 func rowsFromMACFileList(reply *proto.MACFileListReply) [][]string {
 	if reply == nil {
 		return nil
@@ -5439,6 +5653,8 @@ func rowsFromMACFileList(reply *proto.MACFileListReply) [][]string {
 }
 
 // rowsFromMACAuction 转换 MAC 集合竞价记录为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMACAuction(items []proto.MACAuctionItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5453,7 +5669,11 @@ func rowsFromMACAuction(items []proto.MACAuctionItem) [][]string {
 	return rows
 }
 
-// rowsFromMACTickCharts 按交易日遍历分时图，把每一天的全部分时点展开为表格行。
+// rowsFromMACTickCharts 按交易日遍历分时图，把每一天的全部分时点展平为表格行；`reply` 为
+// `nil` 时返回 `nil`。
+//
+// 每行依次为交易日、当日昨收、分时时间、价格、均价、成交量与一个含义语义待确认的占位数值；
+// 日期与昨收在同一天内重复附加到每个分时点行上。
 func rowsFromMACTickCharts(reply *proto.MACTickChartsReply) [][]string {
 	if reply == nil {
 		return nil
@@ -5475,7 +5695,11 @@ func rowsFromMACTickCharts(reply *proto.MACTickChartsReply) [][]string {
 	return rows
 }
 
-// rowsFromMACSymbolInfo 转换 MAC 标的概况响应为单行表格；`unknown` 系列字段语义待确认。
+// rowsFromMACSymbolInfo 把 MAC 标的概况响应转换为单行表格；`reply` 为 `nil` 时返回 `nil`。
+//
+// 行内依次为市场编号、代码、名称、行情时间、活跃度、昨收与 OHLC、动量、成交量额、内外盘量、
+// 小数位数等字段；`UnknownA`、`UnknownB`、`UnknownC` 等 `unknown` 系列字段语义待确认，按
+// 原始数值展示。
 func rowsFromMACSymbolInfo(reply *proto.MACSymbolInfoReply) [][]string {
 	if reply == nil {
 		return nil
@@ -5506,7 +5730,10 @@ func rowsFromMACSymbolInfo(reply *proto.MACSymbolInfoReply) [][]string {
 	}}
 }
 
-// rowsFromMACMarketMonitor 转换 MAC 市场监控条目为表格行；V1 至 V4 字段语义待确认。
+// rowsFromMACMarketMonitor 把 MAC 市场监控条目转换为表格行。
+//
+// `items` 为监控条目切片，每行依次为序号、市场编号、代码、名称、时间、描述、监控数值与异动
+// 类型；`V1` 至 `V4` 附加字段语义待确认，按原始整型或浮点值展示。
 func rowsFromMACMarketMonitor(items []proto.MACMarketMonitorItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5528,7 +5755,10 @@ func rowsFromMACMarketMonitor(items []proto.MACMarketMonitorItem) [][]string {
 	return rows
 }
 
-// newICFQSViewerClient 构造 ICFQS 客户端；`host` 为空时使用内置默认站点，否则指定自定义站点。
+// newICFQSViewerClient 构造一个 ICFQS 数据客户端。
+//
+// `host` 为 `host:port` 形式的自定义站点地址；去除空白后为空时使用客户端内置默认站点，非空
+// 时通过地址选项指定该自定义站点。返回的客户端尚未发起握手，连接动作由调用方完成。
 func newICFQSViewerClient(host string) *gotdx.ICFQSClient {
 	if strings.TrimSpace(host) == "" {
 		return gotdx.NewICFQS()
@@ -5536,7 +5766,10 @@ func newICFQSViewerClient(host string) *gotdx.ICFQSClient {
 	return gotdx.NewICFQS(gotdx.WithICFQSAddress(host))
 }
 
-// newICFQSViewerHotClient 构造 ICFQS 热门行情客户端；`host` 为空时使用内置默认站点，否则指定自定义站点。
+// newICFQSViewerHotClient 构造一个 ICFQS 热门行情客户端。
+//
+// `host` 为 `host:port` 形式的自定义站点地址；去除空白后为空时使用热门行情内置默认站点，非空
+// 时通过地址选项指定该自定义站点。返回的客户端尚未发起握手。
 func newICFQSViewerHotClient(host string) *gotdx.ICFQSClient {
 	if strings.TrimSpace(host) == "" {
 		return gotdx.NewICFQSHot()
@@ -5544,7 +5777,10 @@ func newICFQSViewerHotClient(host string) *gotdx.ICFQSClient {
 	return gotdx.NewICFQSHot(gotdx.WithICFQSAddress(host))
 }
 
-// parseICFQSTableIndex 读取并解析 `ResultSets` 表索引；参数缺失时使用默认值 `def`。
+// parseICFQSTableIndex 从参数映射中读取 `table_index` 并解析为结果集索引。
+//
+// `params` 为前端提交的参数映射；`def` 为参数缺失或为空时使用的默认索引。索引按 `uint32`
+// 十进制整数解析，格式非法或超出取值范围时返回错误；成功时返回非负整数索引。
 func parseICFQSTableIndex(params map[string]string, def int) (int, error) {
 	value, err := parseUint32Value(params, "table_index", uint32(def))
 	if err != nil {
@@ -5553,8 +5789,12 @@ func parseICFQSTableIndex(params map[string]string, def int) (int, error) {
 	return int(value), nil
 }
 
-// parseICFQSCodeParams 解析 ICFQS 板块代码与证券代码参数；仅给出单个板块代码时广播到全部证券，
-// 两侧数量最终不一致时返回错误，`codes` 或 `setcodes` 为空时返回错误。
+// parseICFQSCodeParams 解析 ICFQS 板块代码与证券代码参数，组装为代码对切片。
+//
+// `params` 为前端参数映射；`setcodesDefault`、`codesDefault` 分别为参数缺失时使用的板块代码、
+// 证券代码默认串。`codes` 或 `setcodes` 解析后为空时返回错误；仅给出单个板块代码时广播到全部
+// 证券；两侧数量最终不一致时返回数量不匹配错误。成功时返回与证券代码顺序一一对应的
+// `ICFQSCode` 切片。
 func parseICFQSCodeParams(params map[string]string, setcodesDefault string, codesDefault string) ([]gotdx.ICFQSCode, error) {
 	setcodes := parseCodeList(valueOrDefault(params, "setcodes", setcodesDefault))
 	codes := parseCodeList(valueOrDefault(params, "codes", codesDefault))
@@ -5581,7 +5821,10 @@ func parseICFQSCodeParams(params map[string]string, setcodesDefault string, code
 	return out, nil
 }
 
-// payloadFromICFQSTable 把指定 `ResultSets` 表转换为表格载荷，原始响应整体放入 `Raw` 供查看。
+// payloadFromICFQSTable 把指定 `ResultSets` 表组装为表格载荷。
+//
+// `raw` 为 ICFQS 接口返回的原始映射；`tableIndex` 为待展示结果集的非负索引。表格列名与数据行
+// 由 `rowsFromICFQSTable` 生成，原始响应整体放入载荷 `raw` 字段供前端查看，并附带展示提示。
 func payloadFromICFQSTable(raw map[string]any, tableIndex int) queryPayload {
 	columns, rows := rowsFromICFQSTable(raw, tableIndex)
 	return queryPayload{
@@ -5596,7 +5839,10 @@ func payloadFromICFQSTable(raw map[string]any, tableIndex int) queryPayload {
 	}
 }
 
-// payloadFromICFQSListItems 把 ICFQS `ListItem` 结构转换为表格载荷，原始响应整体放入 `Raw`。
+// payloadFromICFQSListItems 把 ICFQS `ListItem` 结构组装为表格载荷。
+//
+// `raw` 为接口返回的原始映射；列名与数据行由 `rowsFromICFQSListItems` 生成，原始响应整体放入
+// 载荷 `raw` 字段，并附带展示提示。
 func payloadFromICFQSListItems(raw map[string]any) queryPayload {
 	columns, rows := rowsFromICFQSListItems(raw)
 	return queryPayload{
@@ -5607,13 +5853,18 @@ func payloadFromICFQSListItems(raw map[string]any) queryPayload {
 	}
 }
 
-// rowsFromICFQSTables 取第 0 号 `ResultSets` 表转换为列名与数据行。
+// rowsFromICFQSTables 取第 0 号 `ResultSets` 表，返回列名与数据行；无结果集时两者均为 `nil`。
+//
+// `raw` 为接口原始映射；固定以索引 0 调用 `rowsFromICFQSTable`，参数语义与该函数一致。
 func rowsFromICFQSTables(raw map[string]any) ([]string, [][]string) {
 	return rowsFromICFQSTable(raw, 0)
 }
 
-// rowsFromICFQSTable 把指定索引的 `ResultSets` 表转换为列名与数据行；索引越界时返回空结果。
-// 行长度短于列数时用空字符串补齐。
+// rowsFromICFQSTable 把指定索引的 `ResultSets` 表转换为列名与数据行。
+//
+// `raw` 为接口原始映射；`tableIndex` 为结果集索引，越界或结果集缺失时返回 `nil` 列名与 `nil`
+// 行。列名优先取结果集自带定义，缺失时按最长行长度生成默认列名；行长度短于列数时用空字符串
+// 补齐。
 func rowsFromICFQSTable(raw map[string]any, tableIndex int) ([]string, [][]string) {
 	resultSets, _ := raw["ResultSets"].([]any)
 	if tableIndex < 0 || tableIndex >= len(resultSets) {
@@ -5641,7 +5892,10 @@ func rowsFromICFQSTable(raw map[string]any, tableIndex int) ([]string, [][]strin
 	return columns, rows
 }
 
-// columnsFromICFQSResultSet 优先取 `ColName` 列名；缺失时回退到 `ColDes` 中的 `Name` 字段。
+// columnsFromICFQSResultSet 从结果集映射中提取列名。
+//
+// `resultSet` 为单个结果集映射；优先使用 `ColName` 给出的列名数组，缺失或为空时回退到
+// `ColDes` 中各列定义的 `Name` 字段，名称为空的定义被跳过；两种来源都缺失时返回空切片。
 func columnsFromICFQSResultSet(resultSet map[string]any) []string {
 	if rawColumns, ok := resultSet["ColName"].([]any); ok && len(rawColumns) > 0 {
 		columns := make([]string, 0, len(rawColumns))
@@ -5661,7 +5915,9 @@ func columnsFromICFQSResultSet(resultSet map[string]any) []string {
 	return columns
 }
 
-// columnsFromICFQSContent 在结果集未提供列名时，按最长行长度生成 `col_0`、`col_1` 等默认列名。
+// columnsFromICFQSContent 在结果集未提供列名时，按最长行长度生成默认列名。
+//
+// `rawRows` 为原始行切片；列名依次为 `col_0`、`col_1` 等；所有行均为空时返回空切片。
 func columnsFromICFQSContent(rawRows []any) []string {
 	maxLen := 0
 	for _, rawRow := range rawRows {
@@ -5677,7 +5933,10 @@ func columnsFromICFQSContent(rawRows []any) []string {
 	return columns
 }
 
-// rowsFromICFQSListItems 按 `ListHead` 中的表头解析 `ListItem` 列表，行长度不足时补齐空字符串。
+// rowsFromICFQSListItems 按 `ListHead` 表头解析 `ListItem` 列表，返回列名与数据行。
+//
+// `raw` 为接口原始映射；列名取自 `ListHead.ItemHead`，逐行取 `ListItem` 内 `Item` 数组对应位置
+// 的值并格式化，行长度不足时用空字符串补齐；表头或条目缺失时对应结果为空切片。
 func rowsFromICFQSListItems(raw map[string]any) ([]string, [][]string) {
 	head, _ := raw["ListHead"].(map[string]any)
 	rawHeads, _ := head["ItemHead"].([]any)
@@ -5703,7 +5962,10 @@ func rowsFromICFQSListItems(raw map[string]any) ([]string, [][]string) {
 	return columns, rows
 }
 
-// rowsFromMapRows 把对象切片转换为表格：列名取首条记录的键并按字典序排列，缺键留空。
+// rowsFromMapRows 把对象映射切片转换为表格列名与数据行。
+//
+// `items` 为映射切片；列名取首条记录的键并按字典序排列，后续记录缺键时对应单元格留空；
+// 输入为空时返回 `nil` 列名与 `nil` 行。
 func rowsFromMapRows(items []map[string]any) ([]string, [][]string) {
 	if len(items) == 0 {
 		return nil, nil
@@ -5724,7 +5986,10 @@ func rowsFromMapRows(items []map[string]any) ([]string, [][]string) {
 	return columns, rows
 }
 
-// rowsFromMACBelongBoards 转换标的所属板块条目为表格行；`Metric1` 至 `Metric3` 字段语义待确认。
+// rowsFromMACBelongBoards 把标的所属板块条目转换为表格行。
+//
+// `items` 为归属板块条目切片，每行依次为板块类型、状态码、板块代码、板块名称、板块价格、
+// 昨收；`Metric1` 至 `Metric3` 附加数值语义待确认，按原始浮点值展示。
 func rowsFromMACBelongBoards(items []proto.MACBelongBoardItem) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5744,6 +6009,8 @@ func rowsFromMACBelongBoards(items []proto.MACBelongBoardItem) [][]string {
 }
 
 // rowsFromMACSymbolBars 转换 MAC 商品 K 线条目为表格行。
+//
+// `items` 为待转换条目切片；返回行数与输入条目数一一对应，输入为空时返回非 `nil` 的空切片，每行列顺序由函数固定。
 func rowsFromMACSymbolBars(items []proto.MACSymbolBar) [][]string {
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
@@ -5762,8 +6029,10 @@ func rowsFromMACSymbolBars(items []proto.MACSymbolBar) [][]string {
 	return rows
 }
 
-// rowsFromSampling 把缩略采样价格序列转换为序号、价格、昨收与涨跌额表格行；
-// 昨收为 0 时涨跌额列留空。
+// rowsFromSampling 把缩略采样价格序列转换为序号、价格、昨收与涨跌额表格行。
+//
+// `preClose` 为昨收价；`prices` 为按时间顺序排列的采样价格切片，每行序号从 0 起。`preClose`
+// 为 0（协议未提供昨收）时涨跌额列留空，否则涨跌额为当前价格减去昨收。
 func rowsFromSampling(preClose float64, prices []float64) [][]string {
 	rows := make([][]string, 0, len(prices))
 	for i, price := range prices {
@@ -5781,8 +6050,10 @@ func rowsFromSampling(preClose float64, prices []float64) [][]string {
 	return rows
 }
 
-// parseExTableRows 解析扩展市场普通表格文本：逗号分隔条目，条目内以竖线分隔；
-// 键中含 # 时拆分为类别与代码两列。
+// parseExTableRows 解析扩展市场普通表格文本，返回四列键值行。
+//
+// `content` 为服务端返回的逗号分隔文本；逗号分隔条目，条目内部以竖线分隔，首段为键、第二段
+// 为名称。键中含 `#` 时拆分为类别与代码两列，其余行类别列留空；空条目被跳过。
 func parseExTableRows(content string) [][]string {
 	rows := make([][]string, 0)
 	for _, entry := range strings.Split(content, ",") {
@@ -5807,8 +6078,10 @@ func parseExTableRows(content string) [][]string {
 	return rows
 }
 
-// parseExTableDetailRows 解析扩展市场详细表格文本：按最长条目生成列名，
-// 不足列数的行用空字符串补齐。
+// parseExTableDetailRows 解析扩展市场详细表格文本，返回列名与数据行。
+//
+// `content` 为逗号分隔、条目内以竖线分隔的文本；按最长条目生成列名，首列固定为 `key`，其余
+// 依次为 `c2`、`c3` 等；不足列数的行用空字符串补齐。文本为空时返回单列 `key` 与空行切片。
 func parseExTableDetailRows(content string) ([]string, [][]string) {
 	rows := make([][]string, 0)
 	maxCols := 0
@@ -5846,8 +6119,10 @@ func parseExTableDetailRows(content string) ([]string, [][]string) {
 	return columns, rows
 }
 
-// normalizeTableRows 按最长行统一列数，生成 `prefix_0`、`prefix_1` 形式的默认列名，
-// 短行用空字符串补齐；无数据时返回空结果。
+// normalizeTableRows 统一表格行列数并生成默认列名。
+//
+// `rows` 为原始数据行切片；`prefix` 为列名前缀。按最长行确定列数，列名依次为 `prefix_0`、
+// `prefix_1` 等，短行用空字符串补齐；输入无数据时返回 `nil` 列名与 `nil` 行。
 func normalizeTableRows(rows [][]string, prefix string) ([]string, [][]string) {
 	maxColumns := 0
 	for _, row := range rows {
@@ -5871,7 +6146,10 @@ func normalizeTableRows(rows [][]string, prefix string) ([]string, [][]string) {
 	return columns, normalized
 }
 
-// preview 去除首尾空白后把文本截断到 `max` 字符以内，用于表格单元格与原始响应预览。
+// preview 去除首尾空白后把文本截断到 `max` 字节以内，用于表格单元格与原始响应预览。
+//
+// `text` 为待预览文本；`max` 为允许保留的最大字节数，未超限时原样返回，超限时返回前 `max`
+// 字节；按字节截断，可能落在多字节字符中间。
 func preview(text string, max int) string {
 	text = strings.TrimSpace(text)
 	if len(text) <= max {
@@ -5880,13 +6158,17 @@ func preview(text string, max int) string {
 	return text[:max]
 }
 
-// formatFloat 以两位小数的定点格式输出浮点数。
+// formatFloat 以两位小数的定点格式把 `float64` 数值格式化为表格字符串。
+//
+// `value` 为待格式化数值；不使用科学计数法，固定保留两位小数。
 func formatFloat(value float64) string {
 	return strconv.FormatFloat(value, 'f', 2, 64)
 }
 
-// formatAny 把协议动态字段值转换为表格字符串：浮点按两位小数，各整型按十进制，
-// 其余类型走通用格式化，`nil` 输出空字符串。
+// formatAny 把协议动态字段值转换为表格字符串。
+//
+// `value` 为动态字段原始值：`nil` 输出空字符串；`float64`、`float32` 按两位小数输出；各无符号
+// 与有符号整型按十进制输出；字符串原样返回；其余类型走通用 `%v` 格式化。
 func formatAny(value any) string {
 	switch v := value.(type) {
 	case nil:
@@ -5912,7 +6194,9 @@ func formatAny(value any) string {
 	}
 }
 
-// formatFloat32Ptr 以四位小数输出可选浮点指针；指针为空时返回空字符串。
+// formatFloat32Ptr 格式化可选 `float32` 指针，固定保留四位小数。
+//
+// `value` 为待格式化指针；指针为 `nil`（协议未提供该值）时返回空字符串。
 func formatFloat32Ptr(value *float32) string {
 	if value == nil {
 		return ""
@@ -5920,7 +6204,7 @@ func formatFloat32Ptr(value *float32) string {
 	return strconv.FormatFloat(float64(*value), 'f', 4, 64)
 }
 
-// minInt 返回两个整数中的较小值。
+// minInt 返回两个整数中的较小值；`a`、`b` 为待比较整数。
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -5928,7 +6212,7 @@ func minInt(a, b int) int {
 	return b
 }
 
-// lastInt 返回切片最后一个整数；切片为空时返回 0。
+// lastInt 返回整数切片的最后一个元素；`values` 为空切片时返回 0。
 func lastInt(values []int) int {
 	if len(values) == 0 {
 		return 0
@@ -5936,7 +6220,10 @@ func lastInt(values []int) int {
 	return values[len(values)-1]
 }
 
-// ensureMethodsSorted 按分组优先级、组内名称对方法定义排序，保证前端展示顺序稳定。
+// ensureMethodsSorted 对全局方法定义原地排序，保证前端展示顺序稳定。
+//
+// 先按 `methodGroupRank` 给出的分组优先级升序排列，同组内按展示标签字典序排列，分组不同时再按
+// 分组名兜底排序。
 func ensureMethodsSorted() {
 	sort.Slice(methodDefs, func(i, j int) bool {
 		gi := methodGroupRank(methodDefs[i].Group)
@@ -5951,7 +6238,10 @@ func ensureMethodsSorted() {
 	})
 }
 
-// methodGroupRank 返回分组的排序优先级；编号越小越靠前，未登记分组排在最后。
+// methodGroupRank 返回分组的排序优先级编号。
+//
+// `group` 为方法分组名称；已登记分组返回固定优先级，编号越小越靠前；未登记分组返回 100，
+// 排在所有已登记分组之后。
 func methodGroupRank(group string) int {
 	switch group {
 	case "股票快照":
@@ -5983,7 +6273,8 @@ func methodGroupRank(group string) int {
 	}
 }
 
-// init 在程序启动时先排序方法定义，再重建方法索引表，保证运行期查找顺序与展示顺序一致。
+// init 在程序启动时先对方法定义排序，再重建方法索引表，保证运行期按名称查找的顺序与前端展示
+// 顺序一致。
 func init() {
 	ensureMethodsSorted()
 	methodMap = makeMethodMap(methodDefs)

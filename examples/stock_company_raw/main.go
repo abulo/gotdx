@@ -19,7 +19,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	// 查询深市 000001 公司资料包含的章节分类清单。
+	// 市场 `types.MarketSZ`（深市），代码 `000001`；返回该证券 F10 资料的章节目录（名称、文件名、偏移、长度）。
 	categories, err := client.GetCompanyCategories(types.MarketSZ.Uint8(), "000001")
 	if err != nil {
 		log.Fatalln(err)
@@ -28,7 +28,8 @@ func main() {
 
 	if len(categories.Categories) > 0 {
 		first := categories.Categories[0]
-		// 取首个分类，按其给出的文件名、偏移与长度读取对应章节正文。
+		// 取首个目录条目；`Filename`、`Start`（文件内起始字节偏移）、`Length`（正文字节数）
+		// 必须原样取自目录条目，透传给 `GetCompanyContent` 读取章节正文。
 		content, err := client.GetCompanyContent(types.MarketSZ.Uint8(), "000001", first.Filename, first.Start, first.Length)
 		if err != nil {
 			log.Fatalln(err)
@@ -37,7 +38,7 @@ func main() {
 			first.Name, first.Filename, preview(content.Content, 80))
 	}
 
-	// 查询财务摘要：总股本、营业收入、净利润等字段。
+	// 查询财务摘要，返回总股本、营业收入、净利润等指标；金额/股本单位以协议原始字段为准。
 	finance, err := client.GetFinanceInfo(types.MarketSZ.Uint8(), "000001")
 	if err != nil {
 		log.Fatalln(err)
@@ -45,7 +46,7 @@ func main() {
 	log.Printf("finance code=%s updated=%d total_shares=%.2f revenue=%.2f profit=%.2f",
 		finance.Code, finance.UpdatedDate, finance.TotalShares, finance.OperatingRevenue, finance.NetProfit)
 
-	// 查询除权除息历史记录，仅打印前 5 条。
+	// 查询除权除息历史记录（按日期倒序）；`min(5, len(...))` 防止切片越界，仅打印前 5 条。
 	xdxr, err := client.GetXDXRInfo(types.MarketSZ.Uint8(), "000001")
 	if err != nil {
 		log.Fatalln(err)
@@ -64,6 +65,9 @@ func main() {
 		len(bundle.Sections), len(bundle.XDXR), bundle.Finance == nil)
 }
 
+// min 返回整数 a 与 b 中较小的一个。
+//
+// 参数 a、b 为待比较的两个整数；返回值为二者较小值，用于在切片截断时把长度限制在有效范围内，避免越界。
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -71,6 +75,10 @@ func min(a, b int) int {
 	return b
 }
 
+// preview 去掉文本首尾空白后截断到指定长度，用于在日志中打印章节正文预览。
+//
+// 参数 `text` 为待预览的原始文本；参数 `limit` 为预览保留的最大字节数。文本未超长时原样返回；超长时按
+// `limit` 字节截断（未做字符边界处理，多字节字符可能被切在中间），返回截断后的预览串。
 func preview(text string, limit int) string {
 	text = strings.TrimSpace(text)
 	if len(text) <= limit {

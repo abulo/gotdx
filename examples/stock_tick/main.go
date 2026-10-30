@@ -14,7 +14,8 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
-	// 查询深市 000001 当日分时数据，从偏移 0 开始取 60 个时点。
+	// `market` 取 `types.MarketSZ`（深市），代码 `000001`；`start=0` 为起始分时点序号（从 0 开始），
+	// `count=60` 为请求的分时点数量，返回当日分时序列。
 	items, err := client.StockTickChart(types.MarketSZ.Uint8(), "000001", 0, 60)
 	if err != nil {
 		log.Fatalln(err)

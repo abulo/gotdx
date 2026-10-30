@@ -20,43 +20,43 @@ type MACBoardMembersQuotesDynamic struct {
 
 // MACBoardMembersQuotesDynamicRequest 保存动态字段报价查询的板块代码、排序、分页与指标位图参数。
 type MACBoardMembersQuotesDynamicRequest struct {
-	BoardCode   uint32
-	Reserved1   [9]byte
-	SortType    uint16
-	Start       uint32
-	PageSize    uint8
-	Zero        uint8
-	SortOrder   uint8
-	Filter      uint8
-	FieldBitmap [20]byte
+	BoardCode   uint32   // 板块代码，由板块符号经协议映射得到，四字节。
+	Reserved1   [9]byte  // 协议保留填充字节，填零。
+	SortType    uint16   // 排序字段编号，取值见根包 `MACSortType*` 常量；为 0 时默认回填 14（`MACSortChangePct`，按涨跌幅排序）。
+	Start       uint32   // 起始成分股序号（分页偏移），四字节。
+	PageSize    uint8    // 每页条数，为 0 时默认取 80。
+	Zero        uint8    // 协议保留字节，语义待确认。
+	SortOrder   uint8    // 排序方向编号，取值见根包 `MACSortOrder*` 常量（1 为降序、2 为升序、0 为不指定），为 0 时默认回填 1。
+	Filter      uint8    // 成分股排除条件位图，位定义见根包 `MACFilter*` 常量，可按位或叠加，覆盖位图第 17 字节。
+	FieldBitmap [20]byte // 指标字段位图，共 160 位，每一位声明一个指标字段；为空时使用内置默认位图。
 }
 
 // MACDynamicFieldDef 描述一个由位图激活的动态字段，包含位号、取值名称、二进制格式、
 // 中文说明以及兼容旧字段名的别名列表。
 type MACDynamicFieldDef struct {
-	Bit         uint8
-	Name        string
-	Format      string
-	Description string
-	Aliases     []string
+	Bit         uint8    // 位图位号（0 至 159），与请求/回显位图中的置位一一对应。
+	Name        string   // 字段取值的映射键名，取值时使用主字段名。
+	Format      string   // 二进制格式：`uint32` 无符号整数、`int32` 有符号整数、`float32` 单精度浮点。
+	Description string   // 字段中文含义；未登记或语义不明的位标注为未知字段。
+	Aliases     []string // 兼容旧字段名的别名列表，与主字段名写入同一数值。
 }
 
 // MACBoardMemberQuoteDynamicItem 表示一只成分股本次位图激活的全部动态字段取值；
 // 取值以字段名为键存入映射，别名与主字段名指向同一数值。
 type MACBoardMemberQuoteDynamicItem struct {
-	Name   string
-	Market uint16
-	Symbol string
-	Values map[string]any
+	Name   string         // 成分股名称，GBK 解码。
+	Market uint16         // 市场代码，两字节。
+	Symbol string         // 成分股代码，GBK 解码。
+	Values map[string]any // 激活字段取值映射，键为主字段名或别名，取值类型由字段 `Format` 决定。
 }
 
 // MACBoardMembersQuotesDynamicReply 保存动态字段报价返回的回显位图、激活字段定义、计数与逐条成分股。
 type MACBoardMembersQuotesDynamicReply struct {
-	FieldBitmap  [20]byte
-	ActiveFields []MACDynamicFieldDef
-	Count        uint16
-	Total        uint32
-	Stocks       []MACBoardMemberQuoteDynamicItem
+	FieldBitmap  [20]byte                         // 服务端回显的指标位图，与请求位图对应。
+	ActiveFields []MACDynamicFieldDef             // 按位号顺序展开的本次激活字段定义列表。
+	Count        uint16                           // 本次返回的成分股条数，两字节。
+	Total        uint32                           // 板块成分股总数，四字节。
+	Stocks       []MACBoardMemberQuoteDynamicItem // 成分股动态报价列表，按排序结果顺序排列。
 }
 
 var macBoardMembersQuotesDynamicFieldMap = map[uint8]MACDynamicFieldDef{
@@ -210,6 +210,11 @@ func defaultMACBoardMembersQuotesFieldBitmap() [20]byte {
 }
 
 // NewMACBoardMembersQuotesDynamic 创建动态字段报价查询对象；请求参数为空时使用内置默认参数与默认位图。
+//
+// 参数 `req` 指定预填查询参数，可传 `nil`：`BoardCode` 为板块代码、`SortType` 为排序字段、
+// `Start` 为起始序号、`PageSize` 为每页条数、`SortOrder` 为排序方向、`Filter` 为过滤条件、
+// `FieldBitmap` 为指标位图；`SortType`、`PageSize`、`SortOrder` 为 0 时分别回填默认值 14、80、1，
+// 位图为空时使用内置默认位图。
 func NewMACBoardMembersQuotesDynamic(req *MACBoardMembersQuotesDynamicRequest) *MACBoardMembersQuotesDynamic {
 	obj := &MACBoardMembersQuotesDynamic{
 		reqHeader:  new(ReqHeader),
@@ -247,7 +252,11 @@ func (obj *MACBoardMembersQuotesDynamic) applyRequest(req *MACBoardMembersQuotes
 	obj.request = req
 }
 
-// BuildRequest 编码请求参数并返回完整协议报文；写入失败时返回错误。
+// BuildRequest 编码请求参数并返回完整协议报文；逐字段写入失败时返回错误。
+//
+// 该方法无外部入参，从已填充的 `request` 读取参数。由于线上布局与结构体对齐不一致，
+// 需按线上字段顺序逐字段手工写入，最后由 `buildExRequest` 追加命令码
+// `KMSG_MACBOARDMEMBERS` 与请求头封装成完整报文。
 func (obj *MACBoardMembersQuotesDynamic) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
 	if err := binary.Write(payload, binary.LittleEndian, obj.request.BoardCode); err != nil {
@@ -262,6 +271,7 @@ func (obj *MACBoardMembersQuotesDynamic) BuildRequest() ([]byte, error) {
 	if err := binary.Write(payload, binary.LittleEndian, obj.request.Start); err != nil {
 		return nil, err
 	}
+	// 分页大小在协议线上按两字节传输，这里把 `uint8` 提升为 `uint16` 写入。
 	if err := binary.Write(payload, binary.LittleEndian, uint16(obj.request.PageSize)); err != nil {
 		return nil, err
 	}
@@ -282,6 +292,8 @@ func (obj *MACBoardMembersQuotesDynamic) BuildRequest() ([]byte, error) {
 }
 
 // ParseResponse 解码服务端返回的字节流并填充响应；报文长度不足或记录区不完整时返回错误。
+//
+// 参数 `header` 为服务端回传的响应头，`data` 为解压后的响应负载字节流。
 func (obj *MACBoardMembersQuotesDynamic) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) < 26 {
@@ -334,8 +346,11 @@ func (obj *MACBoardMembersQuotesDynamic) Response() *MACBoardMembersQuotesDynami
 	return obj.reply
 }
 
-// decodeMACDynamicValue 按字段格式把 4 字节小端原始值解码为整数或浮点；
+// decodeMACDynamicValue 按字段格式把 4 字节原始值解码为整数或浮点；
 // 整数格式直接按有符号或无符号整数解释，其余格式按单精度浮点位模式还原。
+//
+// 参数 `format` 为字段二进制格式（`uint32`、`int32`、`float32`），`raw` 为该字段的 4 字节原始值；
+// 返回值类型与格式对应，调用方按字段定义自行断言。
 func decodeMACDynamicValue(format string, raw []byte) any {
 	switch format {
 	case "uint32":
@@ -349,6 +364,8 @@ func decodeMACDynamicValue(format string, raw []byte) any {
 
 // activeMACDynamicFields 扫描位图并收集所有置位对应的字段定义；未登记的位生成占位定义，
 // 保证未知位不被静默丢弃。
+//
+// 参数 `bitmap` 为 20 字节指标位图（共 160 位）；返回值按位号从小到大排列的激活字段定义列表。
 func activeMACDynamicFields(bitmap [20]byte) []MACDynamicFieldDef {
 	fields := make([]MACDynamicFieldDef, 0)
 	for bit := 0; bit < len(bitmap)*8; bit++ {

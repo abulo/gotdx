@@ -24,23 +24,35 @@ const (
 	clientModeMacEx
 )
 
-// New 创建连接通达信主行情服务器的客户端，可通过传入的 `Option` 覆盖内置默认地址、超时等配置。
-// 返回的 `Client` 零值不可用，须由 `New` 系列构造；其方法可并发调用。
+// New 创建连接通达信主行情服务器的客户端。
+//
+// 参数 `opts` 为按顺序覆盖内置默认配置的函数式选项，后传入的选项优先生效；不传选项时使用内置
+// 主站地址池、默认超时与重试次数。返回的 `Client` 零值不可用，须由 `New` 系列构造；其方法可
+// 并发调用，同一连接上的请求由客户端内部串行化。
 func New(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeMain)
 }
 
-// NewEx 创建连接通达信扩展行情服务器（港股、美股、期货等）的客户端，可通过 `Option` 覆盖默认配置。
+// NewEx 创建连接通达信扩展行情服务器（港股、美股、期货等）的客户端。
+//
+// 参数 `opts` 为按顺序覆盖内置默认配置的函数式选项，后传入的选项优先生效；不传选项时使用内置
+// 扩展站地址池与默认超时。返回的 `Client` 零值不可用，方法可并发调用。
 func NewEx(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeEx)
 }
 
-// NewMAC 创建连接 MAC 行情主站的客户端，可通过 `Option` 覆盖默认配置。
+// NewMAC 创建连接 MAC 行情主站的客户端。
+//
+// 参数 `opts` 为按顺序覆盖内置默认配置的函数式选项，后传入的选项优先生效；不传选项时使用内置
+// MAC 主站地址池与默认超时。返回的 `Client` 零值不可用，方法可并发调用。
 func NewMAC(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeMacMain)
 }
 
-// NewMACEx 创建连接 MAC 扩展行情服务器的客户端，可通过 `Option` 覆盖默认配置。
+// NewMACEx 创建连接 MAC 扩展行情服务器的客户端。
+//
+// 参数 `opts` 为按顺序覆盖内置默认配置的函数式选项，后传入的选项优先生效；不传选项时使用内置
+// MAC 扩展站地址池与默认超时。返回的 `Client` 零值不可用，方法可并发调用。
 func NewMACEx(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeMacEx)
 }
@@ -62,7 +74,10 @@ type Client struct {
 	decimalPointsLoaded map[uint8]bool
 }
 
-// CurrentAddress 返回当前配置（或最近连接成功）的服务器地址；客户端或选项为空时返回空字符串。
+// CurrentAddress 返回当前配置（或最近连接成功）的服务器 `host:port` 地址。
+//
+// 本方法无业务入参；客户端指针或内部选项为空时返回空字符串；已拨号成功后返回实际连通的地址，
+// 未拨号时返回配置的单点地址。
 func (client *Client) CurrentAddress() string {
 	if client == nil || client.opt == nil {
 		return ""
@@ -70,8 +85,10 @@ func (client *Client) CurrentAddress() string {
 	return client.opt.TCPAddress
 }
 
-// ProbeHosts 探测客户端已配置的地址列表，返回按可达性与延迟排序后的探测结果；
-// 客户端或选项为空时返回空结果。
+// ProbeHosts 并发探测客户端已配置的全部地址，返回按可达性优先、同可达时延迟从低到高排序的
+// 探测结果；每条结果含地址、可达标志与拨号往返耗时，不可达条目同时携带失败原因。
+//
+// 本方法无业务入参；客户端指针或内部选项为空时返回 `nil`；探测使用当前配置的连接超时。
 func (client *Client) ProbeHosts() []HostProbeResult {
 	if client == nil || client.opt == nil {
 		return nil
@@ -79,7 +96,10 @@ func (client *Client) ProbeHosts() []HostProbeResult {
 	return ProbeAddresses(client.addresses(), client.timeout())
 }
 
-// FastestHost 返回延迟最低且可达的已配置地址；全部地址不可达时返回 ErrNoReachableHosts。
+// FastestHost 返回已配置地址中延迟最低且可达的一条探测结果。
+//
+// 本方法无业务入参；全部地址不可达，或客户端指针、内部选项为空时返回零值 `HostProbeResult` 与
+// `ErrNoReachableHosts` 错误；探测使用当前配置的连接超时。
 func (client *Client) FastestHost() (HostProbeResult, error) {
 	if client == nil || client.opt == nil {
 		return HostProbeResult{}, ErrNoReachableHosts
@@ -87,8 +107,10 @@ func (client *Client) FastestHost() (HostProbeResult, error) {
 	return FastestAddress(client.addresses(), client.timeout())
 }
 
-// newClientWithOptions 基于选项与站点模式构造客户端；不同模式把对应站点的单点地址与地址池
-// 切换为后续拨号使用的默认目标。
+// newClientWithOptions 基于选项与站点模式构造客户端。
+//
+// 参数 `opt` 为待深拷贝的配置，空指针时回退到默认配置；参数 `mode` 标识主站、扩展站、MAC 主站或
+// MAC 扩展站，不同模式把对应站点的单点地址与地址池切换为后续拨号使用的默认目标。
 func newClientWithOptions(opt *Options, mode clientMode) *Client {
 	client := &Client{
 		opt:      cloneOptions(opt),
@@ -114,8 +136,10 @@ func newClientWithOptions(opt *Options, mode clientMode) *Client {
 	return client
 }
 
-// cloneOptions 深拷贝 `Options`：结构体值复制，四个地址池单独分配切片，
-// 避免不同客户端的连接配置共享底层切片。
+// cloneOptions 深拷贝 `Options`。
+//
+// 参数 `opt` 为空时返回默认配置；结构体值复制后，四个地址池单独分配切片，避免不同客户端的连接
+// 配置共享底层切片。
 func cloneOptions(opt *Options) *Options {
 	if opt == nil {
 		return defaultOptions()
@@ -128,7 +152,9 @@ func cloneOptions(opt *Options) *Options {
 	return &clone
 }
 
-// connect 按连接顺序逐个尝试地址，任一地址建立 TCP 连接即返回成功；全部失败时返回最后一次错误。
+// connect 按连接顺序逐个尝试地址，任一地址建立 TCP 连接即返回 `nil`。
+//
+// 候选地址为空时返回"未配置 TCP 地址"错误；全部地址拨号失败时返回最后一次拨号错误。
 func (client *Client) connect() error {
 	addresses := client.connectionOrder()
 	if len(addresses) == 0 {
@@ -151,7 +177,10 @@ func (client *Client) connect() error {
 	return lastErr
 }
 
-// connectToAddress 使用超时拨号单个地址，成功后把实际连通的地址写回选项。
+// connectToAddress 使用当前超时拨号单个地址。
+//
+// 参数 `address` 为 `host:port` 形式地址；拨号失败返回底层 `net.DialTimeout` 错误，成功后把实际
+// 连通的地址写回选项，供 `CurrentAddress` 回读。
 func (client *Client) connectToAddress(address string) error {
 	conn, err := net.DialTimeout("tcp", address, client.timeout())
 	if err != nil {
@@ -162,7 +191,8 @@ func (client *Client) connectToAddress(address string) error {
 	return nil
 }
 
-// addresses 汇总单点地址与地址池，单点地址排在前面优先尝试。
+// addresses 汇总单点地址与地址池，返回 `host:port` 地址序列；单点地址排在前面优先尝试，地址池
+// 按配置顺序跟随其后。
 func (client *Client) addresses() []string {
 	addresses := make([]string, 0, 1+len(client.opt.TCPAddressPool))
 	if client.opt.TCPAddress != "" {
@@ -172,8 +202,11 @@ func (client *Client) addresses() []string {
 	return addresses
 }
 
-// connectionOrder 决定本次拨号的地址顺序：未开启测速时保持原顺序；开启时先按可达性与延迟排序，
-// 不可达与重复地址去重后，再把测速未覆盖的原始地址补在末尾。
+// connectionOrder 决定本次拨号的地址顺序。
+//
+// 未开启测速时保持配置原顺序；开启时先按可达性与延迟排序，不可达与重复地址去重后，再把测速未
+// 覆盖的原始地址补在末尾。客户端或选项为空、候选集合为空时返回 `nil`；测速全部失败时回退到原始
+// 地址顺序。
 func (client *Client) connectionOrder() []string {
 	if client == nil || client.opt == nil {
 		return nil
@@ -214,7 +247,9 @@ func (client *Client) connectionOrder() []string {
 	return ordered
 }
 
-// timeout 返回连接与读写超时；客户端、选项缺失或配置非正数时回退到默认超时。
+// timeout 返回本次连接与读写共用的超时时长。
+//
+// 客户端、选项缺失，或 `Options.TimeoutSec` 为非正数时回退到内置默认超时秒数。
 func (client *Client) timeout() time.Duration {
 	if client == nil || client.opt == nil {
 		return time.Duration(_defaultTimeoutSec) * time.Second
@@ -234,8 +269,11 @@ func (client *Client) closeCurrentConn() {
 	}
 }
 
-// connectWithHandshake 逐个地址拨号并执行握手回调；握手失败说明该连接不可用，
-// 立即丢弃后切换下一个地址重试，直到握手成功或候选地址耗尽。
+// connectWithHandshake 逐个地址拨号并执行握手回调。
+//
+// 参数 `handshake` 为在已拨号连接上执行的握手函数，其返回 `nil` 表示握手成功；握手失败说明该
+// 连接帧状态不可信，立即关闭后切换下一个地址重试。候选地址为空返回"未配置 TCP 地址"错误；全部
+// 地址拨号或握手失败时返回最后一次错误。
 func (client *Client) connectWithHandshake(handshake func() error) error {
 	addresses := client.connectionOrder()
 	if len(addresses) == 0 {
@@ -262,8 +300,13 @@ func (client *Client) connectWithHandshake(handshake func() error) error {
 	return lastErr
 }
 
-// exchange 完成一次请求-响应收发：编码请求、带超时写出发送、按帧读取响应头与负载，
-// 压缩帧按需以 `zlib` 解压；写读任一环节出错都会丢弃当前连接。
+// exchange 完成一次请求-响应收发：编码请求、带超时写出发送、按帧读取响应头与负载，压缩帧按需
+// 以 `zlib` 解压。
+//
+// 参数 `builder` 负责协议请求的字节编码；返回的 `respHeader` 为解码后的响应头，`payload`
+// 为解压后的明文负载。尚未建立连接、请求编码失败、写重试超限、帧头或负载读取失败、负载长度超过
+// `MessageMaxBytes`、解压失败等任一环节出错都会返回错误，并丢弃当前连接，避免残留字节破坏后续
+// 帧边界。
 func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.RespHeader, payload []byte, err error) {
 	// 未建立连接时直接报错，避免对空连接执行读写。
 	if client.conn == nil {
@@ -316,7 +359,7 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 		return nil, nil, err
 	}
 
-	// 响应头按小端序解码。
+	// 响应头解码。
 	headerBuf := bytes.NewReader(headerBytes)
 	var header proto.RespHeader
 	if err := binary.Read(headerBuf, binary.LittleEndian, &header); err != nil {
@@ -353,8 +396,11 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 	return &header, msgData, nil
 }
 
-// Connect 连接通达信主行情服务器并完成握手；按候选地址顺序逐个拨号，握手成功后返回应答。
-// 全部候选地址握手失败时返回最后一次错误。
+// Connect 连接通达信主行情服务器并完成 `Hello1` 握手。
+//
+// 本方法无业务入参；按候选地址顺序逐个拨号，握手成功后返回主站握手应答 `*proto.Hello1Reply`；全部
+// 候选地址拨号或握手失败时返回最后一次错误，应答为 `nil`。扩展站客户端会复用内嵌主站连接完成本次
+// 握手。
 func (client *Client) Connect() (*proto.Hello1Reply, error) {
 	// 扩展站客户端复用内嵌主站连接完成主站握手。
 	if client.mode == clientModeEx {
@@ -383,8 +429,11 @@ func (client *Client) Connect() (*proto.Hello1Reply, error) {
 	return reply, nil
 }
 
-// ConnectEx 连接扩展市场服务器并完成登录握手；按候选地址顺序逐个拨号，登录成功后返回应答。
-// 全部候选地址登录失败时返回最后一次错误。
+// ConnectEx 连接扩展市场服务器并完成登录握手。
+//
+// 本方法无业务入参；按候选地址顺序逐个拨号，登录成功后返回扩展站登录应答 `*proto.ExLoginReply`；
+// 全部候选地址拨号或登录失败时返回最后一次错误，应答为 `nil`。主站客户端会复用内嵌扩展站连接完成
+// 本次登录。
 func (client *Client) ConnectEx() (*proto.ExLoginReply, error) {
 	// 主站客户端复用内嵌扩展站连接完成扩展站登录。
 	if client.mode == clientModeMain {
@@ -412,8 +461,10 @@ func (client *Client) ConnectEx() (*proto.ExLoginReply, error) {
 	return reply, nil
 }
 
-// Disconnect 断开当前连接，并关闭关联的主站、扩展站连接；返回关闭过程中遇到的首个错误，
-// 后续关闭错误不会覆盖先出现的错误。
+// Disconnect 断开当前连接，并级联关闭关联的内嵌主站、扩展站连接。
+//
+// 本方法无业务入参；返回关闭过程中遇到的首个错误，后续内嵌连接的关闭错误不会覆盖先出现的错误；
+// 已关闭的内嵌连接会跳过重复关闭。
 func (client *Client) Disconnect() error {
 	client.mu.Lock()
 	conn := client.conn

@@ -20,11 +20,12 @@ type ExchangeAnnouncement struct {
 
 // ExchangeAnnouncementReply 保存交易所公告解析结果，包含公告版本号与解码后的公告正文。
 type ExchangeAnnouncementReply struct {
-	Version uint8  // 公告版本号
-	Content string // 公告正文，已按 GBK 解码
+	Version uint8  // 公告版本号，由服务端给定。
+	Content string // 公告正文，已按 GBK 解码为 UTF-8，取自版本号之后的全部负载。
 }
 
-// NewExchangeAnnouncement 创建交易所公告协议对象，并初始化默认请求头。
+// NewExchangeAnnouncement 创建交易所公告协议对象，并初始化默认请求头；无入参，
+// 返回已就绪的协议对象，对象内部状态非并发安全。
 func NewExchangeAnnouncement() *ExchangeAnnouncement {
 	obj := &ExchangeAnnouncement{
 		reqHeader:  new(ReqHeader),
@@ -39,20 +40,27 @@ func NewExchangeAnnouncement() *ExchangeAnnouncement {
 }
 
 // BuildRequest 把请求对象当前状态编码为协议字节流；编码失败时返回非空错误。
+//
+// 该协议无业务负载，报文体长度固定为两字节，两个长度字段互为冗余校验。
 func (obj *ExchangeAnnouncement) BuildRequest() ([]byte, error) {
 	obj.reqHeader.PkgLen1 = 2
 	obj.reqHeader.PkgLen2 = 2
 	buf := new(bytes.Buffer)
+	// 请求头整体写入，其后不追加业务负载。
 	err := binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	return buf.Bytes(), err
 }
 
 // ParseResponse 解析服务端返回的公告响应负载并填充内部响应结果；负载为空时返回错误。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节流；解析成功返回 `nil`，
+// 负载长度非法时返回非空错误。
 func (obj *ExchangeAnnouncement) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) == 0 {
 		return fmt.Errorf("invalid exchange announcement response length: %d", len(data))
 	}
+	// 首字节为版本号，其后全部字节为公告正文。
 	obj.reply.Version = data[0]
 	obj.reply.Content = Utf8ToGbk(data[1:])
 	return nil
@@ -74,10 +82,10 @@ type HeartBeat struct {
 
 // HeartBeatReply 保存心跳响应结果，记录服务端返回的打包日期整数。
 type HeartBeatReply struct {
-	Date uint32 // 服务端日期，打包形式由服务端协议规定
+	Date uint32 // 服务端打包日期，年月日依次占两位的四字节整数，如 20250512 对应 2025 年 5 月 12 日。
 }
 
-// NewHeartBeat 创建心跳协议对象，并初始化默认请求头。
+// NewHeartBeat 创建心跳协议对象，并初始化默认请求头；无入参，返回已就绪的协议对象。
 func NewHeartBeat() *HeartBeat {
 	obj := &HeartBeat{
 		reqHeader:  new(ReqHeader),
@@ -92,20 +100,27 @@ func NewHeartBeat() *HeartBeat {
 }
 
 // BuildRequest 把请求对象当前状态编码为心跳协议字节流；编码失败时返回非空错误。
+//
+// 心跳协议无业务负载，报文体长度固定为两字节，两个长度字段互为冗余校验。
 func (obj *HeartBeat) BuildRequest() ([]byte, error) {
 	obj.reqHeader.PkgLen1 = 2
 	obj.reqHeader.PkgLen2 = 2
 	buf := new(bytes.Buffer)
+	// 请求头整体写入，其后不追加业务负载。
 	err := binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	return buf.Bytes(), err
 }
 
 // ParseResponse 解析心跳响应负载；响应不足定长下限十个字节时返回错误，避免越界读取日期字段。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节流；解析成功返回 `nil`，
+// 负载长度不足时返回非空错误。
 func (obj *HeartBeat) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) < 10 {
 		return fmt.Errorf("invalid heartbeat response length: %d", len(data))
 	}
+	// 第六至九字节为四字节打包日期，前六个字节的协议用途语义待确认。
 	obj.reply.Date = binary.LittleEndian.Uint32(data[6:10])
 	return nil
 }
@@ -126,14 +141,14 @@ type Announcement struct {
 
 // AnnouncementReply 保存服务商公告解析结果，标记是否存在公告，并记录失效日期、标题、作者与正文。
 type AnnouncementReply struct {
-	HasContent bool   // 是否存在公告内容
-	ExpireDate string // 公告失效日期
-	Title      string // 公告标题，已按 GBK 解码
-	Author     string // 公告作者，已按 GBK 解码
-	Content    string // 公告正文，已按 GBK 解码
+	HasContent bool   // 是否存在公告内容；服务端状态字节非一时保持 `false`。
+	ExpireDate string // 公告失效日期，格式为年-月-日。
+	Title      string // 公告标题，长度前缀文本段，已按 GBK 解码。
+	Author     string // 公告作者，长度前缀文本段，已按 GBK 解码。
+	Content    string // 公告正文，长度前缀文本段，已按 GBK 解码。
 }
 
-// NewAnnouncement 创建服务商公告协议对象，并初始化默认请求头。
+// NewAnnouncement 创建服务商公告协议对象，并初始化默认请求头；无入参，返回已就绪的协议对象。
 func NewAnnouncement() *Announcement {
 	obj := &Announcement{
 		reqHeader:  new(ReqHeader),
@@ -148,18 +163,25 @@ func NewAnnouncement() *Announcement {
 }
 
 // BuildRequest 把请求头与协议要求的定长零填充负载编码为公告协议字节流；编码失败时返回非空错误。
+//
+// 报文体总长五十六字节：两字节头部长度加五十四字节零填充负载，两个长度字段互为冗余校验。
 func (obj *Announcement) BuildRequest() ([]byte, error) {
 	obj.reqHeader.PkgLen1 = 56
 	obj.reqHeader.PkgLen2 = 56
 	buf := new(bytes.Buffer)
+	// 请求头整体写入。
 	if err := binary.Write(buf, binary.LittleEndian, obj.reqHeader); err != nil {
 		return nil, err
 	}
+	// 追加五十四字节零填充，凑足协议要求的定长负载。
 	_, err := buf.Write(make([]byte, 54))
 	return buf.Bytes(), err
 }
 
 // ParseResponse 解析公告响应负载，按长度前缀依次取出标题、作者与正文；报文越界或长度非法时返回错误。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节流；解析成功返回 `nil`，
+// 负载为空、长度越界或文本长度非法时返回非空错误。
 func (obj *Announcement) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) == 0 {
@@ -172,6 +194,7 @@ func (obj *Announcement) ParseResponse(header *RespHeader, data []byte) error {
 	if len(data) < 11 {
 		return fmt.Errorf("invalid announcement payload length: %d", len(data))
 	}
+	// 第一至四字节为打包日期，第五至十字节依次为标题、作者、正文的两字节长度。
 	dateRaw := binary.LittleEndian.Uint32(data[1:5])
 	titleLen := int(binary.LittleEndian.Uint16(data[5:7]))
 	authorLen := int(binary.LittleEndian.Uint16(data[7:9]))
@@ -209,19 +232,19 @@ type Info struct {
 
 // InfoReply 保存服务端信息探测响应结果；标注为待确认的字段按原始数值与十六进制片段原样保留，不做语义解读。
 type InfoReply struct {
-	Delay       uint32    // 网络时延
-	Info        string    // 服务端信息文案，已按 GBK 解码
-	Content     string    // 公告正文，已按 GBK 解码
-	ServerSign  string    // 服务端签名，已按 GBK 解码
-	TimeNow     string    // 服务端当前时间，格式为年月日加时分秒
-	Unknown1    [3]string // 语义待确认，保留原始数值与十六进制片段
-	Unknown2    [3]string // 语义待确认，保留原始数值与十六进制片段
-	Unknown3    [3]uint16 // 语义待确认，保留原始数值
-	Region      uint16    // 区域编号
-	MaybeSwitch uint16    // 语义待确认的开关位
+	Delay       uint32    // 网络时延，四字节整数，计量单位语义待确认。
+	Info        string    // 服务端信息文案，定长文本段，已按 GBK 解码。
+	Content     string    // 公告正文，定长文本段，已按 GBK 解码。
+	ServerSign  string    // 服务端签名，定长文本段，已按 GBK 解码。
+	TimeNow     string    // 服务端当前时间，格式为年-月-日 时:分:秒；日期字段为零时保持空串。
+	Unknown1    [3]string // 语义待确认，保留两个原始数值与一段十六进制片段。
+	Unknown2    [3]string // 语义待确认，保留两个原始数值与一段十六进制片段。
+	Unknown3    [3]uint16 // 语义待确认，由区域编号、待确认数值与开关位顺序组成。
+	Region      uint16    // 区域编号，两字节整数。
+	MaybeSwitch uint16    // 语义待确认的开关位，两字节整数。
 }
 
-// NewInfo 创建服务端信息探测协议对象，并初始化默认请求头。
+// NewInfo 创建服务端信息探测协议对象，并初始化默认请求头；无入参，返回已就绪的协议对象。
 func NewInfo() *Info {
 	obj := &Info{
 		reqHeader:  new(ReqHeader),
@@ -236,16 +259,21 @@ func NewInfo() *Info {
 }
 
 // BuildRequest 把请求对象当前状态编码为信息探测协议字节流；编码失败时返回非空错误。
+//
+// 该协议无业务负载，报文体长度固定为两字节，两个长度字段互为冗余校验。
 func (obj *Info) BuildRequest() ([]byte, error) {
 	obj.reqHeader.PkgLen1 = 2
 	obj.reqHeader.PkgLen2 = 2
 	buf := new(bytes.Buffer)
+	// 请求头整体写入，其后不追加业务负载。
 	err := binary.Write(buf, binary.LittleEndian, obj.reqHeader)
 	return buf.Bytes(), err
 }
 
 // ParseResponse 按固定字节偏移解析服务端信息响应；响应不足定长下限四百二十七字节时返回错误。
-// 文本段统一按 GBK 解码，日期与时间分别按年月日、时分秒打包为小端整数。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节流；解析成功返回 `nil`，
+// 负载长度不足时返回非空错误。文本段统一按 GBK 解码，日期与时间分别按年月日、时分秒打包为整数。
 func (obj *Info) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) < 427 {
@@ -263,6 +291,7 @@ func (obj *Info) ParseResponse(header *RespHeader, data []byte) error {
 	unknown2A := binary.LittleEndian.Uint16(data[360:362])
 	unknown2B := binary.LittleEndian.Uint16(data[362:364])
 	unknown3B := binary.LittleEndian.Uint16(data[391:393])
+	// 第三百九十七至四百字节为打包日期，第四百零一至四百零四字节为打包时间；日期为零时不填充时间。
 	dateNow := binary.LittleEndian.Uint32(data[397:401])
 	timeNow := binary.LittleEndian.Uint32(data[401:405])
 	if dateNow != 0 {

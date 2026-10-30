@@ -22,31 +22,35 @@ type GetTransactionData struct {
 
 // GetTransactionDataRequest 是 GetTransactionData 分笔成交查询使用的请求参数。
 type GetTransactionDataRequest struct {
-	Market uint16  // 市场代码。
-	Code   [6]byte // 证券代码。
-	Start  uint16  // 起始偏移。
-	Count  uint16  // 请求条数。
+	Market uint16  // 市场代码，`uint16`。
+	Code   [6]byte // 6 字节定长证券代码。
+	Start  uint16  // 起始偏移，`uint16`，从 0 开始按页递增。
+	Count  uint16  // 请求条数，`uint16`。
 }
 
 // GetTransactionDataReply 是 GetTransactionData 分笔成交查询解析完成后的响应数据。
 type GetTransactionDataReply struct {
-	Count uint16            // 返回条数。
-	List  []TransactionData // 当日逐笔成交记录列表。
+	Count uint16            // 返回笔数，`uint16`。
+	List  []TransactionData // 当日逐笔成交记录列表，长度与 `Count` 一致。
 }
 
 // TransactionData 表示一笔分笔成交记录，包含时间、价格、量、笔数与买卖方向。
 type TransactionData struct {
-	Time      string  // 成交时间，格式为时:分。
-	Price     float64 // 成交价，单位为元。
-	Vol       int     // 成交量。
-	Num       int     // 笔数或委托笔数。
+	Time      string  // 成交时间，格式为时:分，由当日分钟数拆分。
+	Price     float64 // 成交价，单位为元，按代码前缀缩放单位还原。
+	Vol       int     // 成交量（手），变长整数解码。
+	Num       int     // 笔数或委托笔数，变长整数解码。
 	Trans     int     // 委托笔数字段，语义待确认。
-	BuyOrSell int     // 买卖方向原始标记码。
-	Action    string  // 买卖方向文字，取值为买、卖或中性。
-	Unknown   int     // 未确认字段，语义待确认。
+	BuyOrSell int     // 买卖方向原始标记码，变长整数解码。
+	Action    string  // 买卖方向文字，取值为买、卖或中性，由 `BuyOrSell` 映射得到。
+	Unknown   int     // 未确认字段，变长整数解码，语义待确认。
 }
 
-// NewGetTransactionData 构造分笔成交查询对象；`req` 为 `nil` 时使用空请求参数，返回的对象可直接调用 BuildRequest 与 ParseResponse。
+// NewGetTransactionData 构造分笔成交查询对象。
+//
+// 参数 `req` 指定市场 `Market`、证券代码 `Code`、起始偏移 `Start` 与请求条数
+// `Count`；`req` 为 `nil` 时使用空请求参数。返回的对象可直接调用 `BuildRequest`
+// 与 `ParseResponse`。
 func NewGetTransactionData(req *GetTransactionDataRequest) *GetTransactionData {
 	obj := new(GetTransactionData)
 	obj.reqHeader = new(ReqHeader)
@@ -72,8 +76,12 @@ func (obj *GetTransactionData) applyRequest(req *GetTransactionDataRequest) {
 	obj.request = req
 }
 
-// BuildRequest 将请求头、请求参数及可选附加负载编码为协议报文；缓冲区写入失败时返回错误。
+// BuildRequest 将请求头、请求参数及可选附加负载编码为协议报文。
+//
+// 返回的字节切片可直接写入连接；`PkgLen1` 与 `PkgLen2` 双写为同一负载长度，
+// 缓冲区写入失败时返回错误。
 func (obj *GetTransactionData) BuildRequest() ([]byte, error) {
+	// 负载 14 字节（市场 2 + 代码 6 + 偏移 2 + 条数 2 + 保留 2），包头长度双写为 0x0e。
 	obj.reqHeader.PkgLen1 = 0x0e
 	obj.reqHeader.PkgLen2 = 0x0e
 
@@ -92,12 +100,14 @@ func (obj *GetTransactionData) BuildRequest() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// ParseResponse 解析服务端返回的分笔成交明细报文并填充响应对象；解码失败时返回错误。
+// ParseResponse 解析服务端返回的分笔成交明细报文并填充响应对象。
+//
+// 参数 `header` 为服务端响应头，`data` 为响应负载字节；解码失败时返回错误。
 func (obj *GetTransactionData) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 
 	pos := 0
-	// 头部 2 字节：小端序成交笔数。
+	// 头部 2 字节：成交笔数。
 	err := binary.Read(bytes.NewBuffer(data[pos:pos+2]), binary.LittleEndian, &obj.reply.Count)
 	pos += 2
 
@@ -125,12 +135,15 @@ func (obj *GetTransactionData) ParseResponse(header *RespHeader, data []byte) er
 	return err
 }
 
-// Response 返回已解析完成的分笔成交响应数据；未调用 ParseResponse 时返回空响应对象。
+// Response 返回已解析完成的分笔成交响应数据；未调用 `ParseResponse` 时返回空响应对象。
 func (obj *GetTransactionData) Response() *GetTransactionDataReply {
 	return obj.reply
 }
 
-// actionFromCode 将服务端买卖方向码映射为可读字符串：0 为买、1 为卖、2 为中性，其余未知编码原样返回数字字符串。
+// actionFromCode 将服务端买卖方向码映射为可读字符串。
+//
+// 参数 `code` 为原始方向码：0 为买、1 为卖、2 为中性；返回对应方向文字，其余
+// 未知编码原样返回数字字符串。
 func actionFromCode(code int) string {
 	switch code {
 	case 0:
