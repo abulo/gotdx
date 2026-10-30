@@ -3,24 +3,28 @@ package gotdx
 import "testing"
 
 func TestMACFieldBitmapPresets(t *testing.T) {
+	// 默认板块成员行情位图的字节序列与协议约定一致。
 	defaultBitmap := DefaultMACBoardMembersQuotesFieldBitmap()
 	expectedDefault := [20]byte{0xff, 0xfc, 0xe1, 0xcc, 0x3f, 0x08, 0x03, 0x01}
 	if defaultBitmap != expectedDefault {
 		t.Fatalf("default bitmap mismatch: got %x want %x", defaultBitmap, expectedDefault)
 	}
 
+	// `MACPresetCommon` 预设展开后的固定字节序列。
 	common := MACFieldBitmap(MACPresetCommon)
 	expectedCommon := [20]byte{0xff, 0xfc, 0xa1, 0xcc, 0x3f, 0x28, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03}
 	if common != expectedCommon {
 		t.Fatalf("common preset literal mismatch: got %x want %x", common, expectedCommon)
 	}
 
+	// 预设编号与单个字段位可叠加组合成自定义位图。
 	custom := MACFieldBitmap(MACPresetOHLC, MACFieldAHCode)
 	expected := MACBoardMembersQuotesFieldBitmapFromBits(1, 2, 3, 4, 0x4a)
 	if custom != expected {
 		t.Fatalf("custom bitmap mismatch: got %x want %x", custom, expected)
 	}
 
+	// `MACPresetDebug` 选中全部字段位，每个字节均为 `0xff`。
 	debug := MACFieldBitmap(MACPresetDebug)
 	for i, b := range debug {
 		if b != 0xff {
@@ -30,6 +34,7 @@ func TestMACFieldBitmapPresets(t *testing.T) {
 }
 
 func TestMACFieldAliases(t *testing.T) {
+	// 历史别名常量必须与现行字段位保持同一取值，避免旧调用方错位。
 	if MACFieldBid2Volume != MACFieldLimitUpCount {
 		t.Fatal("bid2 volume alias should match limit up count")
 	}
@@ -45,6 +50,7 @@ func TestMACFieldAliases(t *testing.T) {
 }
 
 func TestMACBoardMembersQuotesRequestBitmap(t *testing.T) {
+	// 请求位图在字段位图之外追加板块过滤标志位与扩展控制位。
 	bitmap := MACFieldBitmap(MACFieldMainNetRatio, MACFieldChangeAt1000)
 	requestBitmap := MACBoardMembersQuotesRequestBitmap(bitmap, MACFilterKCB, MACFilterST, MACFilterBJ)
 

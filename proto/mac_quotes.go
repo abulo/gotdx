@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-// MACQuotes 表示 0x122D MAC 行情快照协议。
+// MACQuotes 查询单只标的的实时行情快照与分时采样序列。
+//
+// 使用时先由 NewMACQuotes 构造对象，再依次调用 BuildRequest、ParseResponse，最后读取响应结果。
+// 该对象面向单次请求使用，内部未做并发同步，不应在多个并发协程间共享；零值不可直接使用。
 type MACQuotes struct {
 	reqHeader  *ReqHeader
 	respHeader *RespHeader
@@ -16,7 +19,7 @@ type MACQuotes struct {
 	reply      *MACQuotesReply
 }
 
-// MACQuotesRequest 表示 0x122D MAC 行情快照请求。
+// MACQuotesRequest 保存行情快照查询的市场与标的代码参数，其余字段为协议保留占位。
 type MACQuotesRequest struct {
 	Market uint16
 	Code   [22]byte
@@ -29,12 +32,12 @@ type MACQuotesRequest struct {
 	Zero6  uint16
 }
 
-// MACQuotesReply 表示 MAC 单只行情快照及分时采样响应。
+// MACQuotesReply 保存行情快照、分时采样序列与汇总行情数据。
 type MACQuotesReply struct {
 	Market       uint16
 	Code         string
 	Date         uint32
-	Unknown      uint8
+	Unknown      uint8 // 协议保留槽位，语义待确认
 	Price        float64
 	Count        uint16
 	ChartData    []MACQuoteChartItem
@@ -57,7 +60,7 @@ type MACQuotesReply struct {
 	IndustryCode string
 }
 
-// MACQuoteChartItem 表示 MAC 分时采样点。
+// MACQuoteChartItem 表示分时图上的一个采样点，包含分钟时间标签、成交价、均价、累计成交量与动量值。
 type MACQuoteChartItem struct {
 	Time     string
 	Price    float64
@@ -66,7 +69,7 @@ type MACQuoteChartItem struct {
 	Momentum float64
 }
 
-// NewMACQuotes 创建 MAC 行情快照协议对象。
+// NewMACQuotes 创建行情快照查询对象；请求参数为空时使用内置默认参数。
 func NewMACQuotes(req *MACQuotesRequest) *MACQuotes {
 	obj := &MACQuotes{
 		reqHeader:  new(ReqHeader),
@@ -92,6 +95,7 @@ func (obj *MACQuotes) applyRequest(req *MACQuotesRequest) {
 	obj.request = req
 }
 
+// BuildRequest 编码请求参数并返回完整协议报文；序列化失败时返回错误。
 func (obj *MACQuotes) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
 	if err := binary.Write(payload, binary.LittleEndian, obj.request); err != nil {
@@ -100,12 +104,15 @@ func (obj *MACQuotes) BuildRequest() ([]byte, error) {
 	return buildExRequest(KMSG_MACQUOTES, payload.Bytes())
 }
 
+// ParseResponse 解码服务端返回的字节流并填充响应；报文长度不足或记录区不完整时返回错误。
 func (obj *MACQuotes) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) < 35 {
 		return fmt.Errorf("invalid mac quotes response length: %d", len(data))
 	}
 
+	// 35 字节头部：市场（0:2）、GBK 代码（2:24）、打包日期（24:28）、保留字节（28）、
+	// 现价（29:33）、分时点数（33:35），整数按小端序、价格按单精度浮点还原。
 	obj.reply.Market = binary.LittleEndian.Uint16(data[:2])
 	obj.reply.Code = Utf8ToGbk(data[2:24])
 	obj.reply.Date = binary.LittleEndian.Uint32(data[24:28])
@@ -113,13 +120,16 @@ func (obj *MACQuotes) ParseResponse(header *RespHeader, data []byte) error {
 	obj.reply.Price = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[29:33])))
 	obj.reply.Count = binary.LittleEndian.Uint16(data[33:35])
 
+	// 分时点序列自偏移 35 开始，每条定长 18 字节。
 	pos := 35
 	for i := uint16(0); i < obj.reply.Count; i++ {
 		if pos+18 > len(data) {
 			return fmt.Errorf("invalid mac quote chart item %d", i)
 		}
+		// 条目布局：分钟偏移（0:2）、价格（2:6）、均价（6:10）、累计成交量（10:14）、动量（14:18）。
 		minutes := binary.LittleEndian.Uint16(data[pos : pos+2])
 		item := MACQuoteChartItem{
+			// 分钟偏移换算为时与分，生成分时时间标签。
 			Time:     time.Date(0, 1, 1, int(minutes/60)%24, int(minutes%60), 0, 0, time.Local).Format("15:04:05"),
 			Price:    float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+2 : pos+6]))),
 			Avg:      float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+6 : pos+10]))),
@@ -130,38 +140,45 @@ func (obj *MACQuotes) ParseResponse(header *RespHeader, data []byte) error {
 		pos += 18
 	}
 
+	// 汇总行情段至少需要 109 字节，长度不足则报错，防止后续固定偏移切片越界。
 	if pos+109 > len(data) {
 		return fmt.Errorf("invalid mac quotes summary length: %d", len(data)-pos)
 	}
 
+	// 汇总段起始：GBK 名称（0:44）、精度字节（44）、类别（45:47）、量纲（47:51）。
 	obj.reply.Name = Utf8ToGbk(data[pos : pos+44])
 	obj.reply.Decimal = data[pos+44]
 	obj.reply.Category = binary.LittleEndian.Uint16(data[pos+45 : pos+47])
 	obj.reply.VolUnit = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+47 : pos+51])))
+	// 日期（56:60）与时间（60:64）为两个打包整数，分别按年月日、时分秒拆分。
 	dateRaw := binary.LittleEndian.Uint32(data[pos+56 : pos+60])
 	timeRaw := binary.LittleEndian.Uint32(data[pos+60 : pos+64])
 	obj.reply.DateTime = formatMACQuoteDateTime(dateRaw, timeRaw)
+	// 偏移 64 到 84 依次为昨收、开、高、低、收，均为单精度浮点。
 	obj.reply.PreClose = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+64 : pos+68])))
 	obj.reply.Open = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+68 : pos+72])))
 	obj.reply.High = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+72 : pos+76])))
 	obj.reply.Low = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+76 : pos+80])))
 	obj.reply.Close = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+80 : pos+84])))
 	obj.reply.Momentum = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+84 : pos+88])))
+	// 88:92 成交量、92:96 成交额；108:112 换手率、112:116 均价；116:120 行业编号。
 	obj.reply.Vol = binary.LittleEndian.Uint32(data[pos+88 : pos+92])
 	obj.reply.Amount = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+92 : pos+96])))
 	obj.reply.Turnover = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+108 : pos+112])))
 	obj.reply.Avg = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+112 : pos+116])))
 	obj.reply.Industry = binary.LittleEndian.Uint32(data[pos+116 : pos+120])
+	// 行业编号按前缀规则换算为行业板块代码字符串。
 	obj.reply.IndustryCode = macIndustryBoardSymbol(obj.reply.Industry)
 
 	return nil
 }
 
-// Response 返回解析后的 MAC 行情快照响应。
+// Response 返回解码完成的行情快照响应；未调用 ParseResponse 前内容为零值。
 func (obj *MACQuotes) Response() *MACQuotesReply {
 	return obj.reply
 }
 
+// formatMACQuoteDateTime 将打包日期与打包时间两个整数拆分，组合为本地时间。
 func formatMACQuoteDateTime(dateRaw uint32, timeRaw uint32) time.Time {
 	year := int(dateRaw / 10000)
 	month := int((dateRaw % 10000) / 100)

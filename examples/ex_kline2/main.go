@@ -1,3 +1,6 @@
+// Command ex_kline2 演示第二套 K 线协议 ExKLine2 获取扩展市场证券 K 线，以美股 `TSLA` 日线为例打印最近 10 根。
+//
+// 运行示例：`go run ./examples/ex_kline2`
 package main
 
 import (
@@ -11,6 +14,7 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
+	// 与 ExKLine 使用相同的周期、偏移与条数参数，仅协议实现不同。
 	items, err := client.ExKLine2(types.ExCategoryUSStock, "TSLA", types.KLINE_TYPE_DAILY, 0, 10, 1)
 	if err != nil {
 		log.Fatalln(err)

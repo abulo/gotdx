@@ -10,6 +10,8 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
+// executeGenericMethodProtocol 是 `execute` 泛型流程的最小协议桩：请求体固定为单字节，
+// 响应负载原样保存为应答字符串，用于在 `net.Pipe` 上走通一次收发流程。
 type executeGenericMethodProtocol struct {
 	reply string
 }
@@ -28,6 +30,7 @@ func (p *executeGenericMethodProtocol) Response() string {
 }
 
 func TestClientExecuteGenericMethod(t *testing.T) {
+	// 使用 `net.Pipe` 在同一进程内模拟一条连接，避免依赖真实网络。
 	clientConn, serverConn := net.Pipe()
 	t.Cleanup(func() {
 		_ = clientConn.Close()

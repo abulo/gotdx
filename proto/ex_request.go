@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 )
 
+// exReqHeader 是扩展市场协议专用的请求头布局，字段顺序与主站标准请求头不同。
 type exReqHeader struct {
 	Head       uint8
 	Customize  uint32
@@ -13,6 +14,8 @@ type exReqHeader struct {
 	PkgLen2    uint16
 }
 
+// buildExRequest 构造扩展市场协议请求报文：先把命令码与业务负载拼成报文体，
+// 再写入记录报文体长度的专用请求头；编码失败时返回非空错误。
 func buildExRequest(method uint16, payload []byte) ([]byte, error) {
 	body := new(bytes.Buffer)
 	if err := binary.Write(body, binary.LittleEndian, method); err != nil {

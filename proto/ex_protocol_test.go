@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// readExReqHeader 读取扩展协议请求报文前 10 字节的扩展头部，解码失败立即终止测试。
 func readExReqHeader(t *testing.T, raw []byte) exReqHeader {
 	t.Helper()
 	var header exReqHeader
@@ -17,6 +18,7 @@ func readExReqHeader(t *testing.T, raw []byte) exReqHeader {
 	return header
 }
 
+// writeFloat32 将单精度浮点按小端序写入缓冲区，用于构造扩展协议测试报文。
 func writeFloat32(t *testing.T, buf *bytes.Buffer, value float32) {
 	t.Helper()
 	if err := binary.Write(buf, binary.LittleEndian, math.Float32bits(value)); err != nil {
@@ -24,6 +26,8 @@ func writeFloat32(t *testing.T, buf *bytes.Buffer, value float32) {
 	}
 }
 
+// buildExQuoteRecord 按扩展行情记录的固定字段顺序构造一条测试报文，
+// `codeLen` 为代码字段宽度，`category` 为市场类别；构造完成后校验总长度是否符合预期。
 func buildExQuoteRecord(t *testing.T, codeLen int, category byte, code string) []byte {
 	t.Helper()
 	buf := new(bytes.Buffer)

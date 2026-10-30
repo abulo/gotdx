@@ -39,6 +39,8 @@ func TestSeqIDConcurrent(t *testing.T) {
 	}
 }
 
+// encodePrice 按通达信价格变长编码规则将整数价格编码为小端变长字节；
+// 负号由首字节的符号标志位承载，后续字节高位为 1 表示仍有续字节。
 func encodePrice(value int) []byte {
 	sign := value < 0
 	if sign {
@@ -67,6 +69,8 @@ func encodePrice(value int) []byte {
 	return out
 }
 
+// encodeVolumeProfilePriceDelta 按资金分布价格差编码规则将 `int32` 编码为变长字节，
+// 该编码不携带独立的负号标志位。
 func encodeVolumeProfilePriceDelta(value int32) []byte {
 	u := uint32(value)
 	first := byte(u & 0x3f)
@@ -88,6 +92,7 @@ func encodeVolumeProfilePriceDelta(value int32) []byte {
 	return out
 }
 
+// mustBuildRequest 调用消息的 `BuildRequest` 生成请求报文，构造失败立即终止测试。
 func mustBuildRequest(t *testing.T, msg RequestBuilder) []byte {
 	t.Helper()
 	raw, err := msg.BuildRequest()
@@ -97,6 +102,7 @@ func mustBuildRequest(t *testing.T, msg RequestBuilder) []byte {
 	return raw
 }
 
+// readReqHeader 读取标准协议请求报文前 12 字节头部，解码失败立即终止测试。
 func readReqHeader(t *testing.T, raw []byte) ReqHeader {
 	t.Helper()
 	var header ReqHeader
@@ -106,7 +112,7 @@ func readReqHeader(t *testing.T, raw []byte) ReqHeader {
 	return header
 }
 
-// TestBaseUnit 验证 ETF 使用千分位，其他证券保持默认百分位。
+// TestBaseUnit 验证 `ETF` 使用千分位，其他证券保持默认百分位。
 func TestBaseUnit(t *testing.T) {
 	tests := map[string]float64{
 		"510300": 1000,
@@ -327,7 +333,7 @@ func TestGetHistoryMinuteTimeDataBuildRequestAndParseResponse(t *testing.T) {
 	}
 }
 
-// 验证空或超短报文返回 error 而非 panic（修复前 data[:2] 会越界）。
+// 验证空报文或超短报文返回错误而非触发 `panic`（修复前 `data[:2]` 会越界）。
 func TestGetHistoryMinuteTimeDataParseResponseShortData(t *testing.T) {
 	msg := NewGetHistoryMinuteTimeData(&GetHistoryMinuteTimeDataRequest{
 		Date:   20260811,
@@ -335,17 +341,17 @@ func TestGetHistoryMinuteTimeDataParseResponseShortData(t *testing.T) {
 		Code:   [6]byte{'0', '0', '0', '7', '7', '9'},
 	})
 
-	// 空报文：修复前触发 slice bounds out of range panic。
+	// 空报文：修复前会触发切片下标越界并崩溃。
 	if err := msg.ParseResponse(&RespHeader{}, []byte{}); err == nil {
 		t.Fatal("expected error for empty payload")
 	}
-	// 少于 10 字节的头部报文同样应返回 error。
+	// 少于 10 字节的头部报文同样应返回错误。
 	if err := msg.ParseResponse(&RespHeader{}, make([]byte, 4)); err == nil {
 		t.Fatal("expected error for short payload")
 	}
 }
 
-// 验证 Count 声称条数超过实际报文时返回 error 而非 panic。
+// 验证 `Count` 声称的条数超过实际报文长度时，返回错误而非触发 `panic`。
 func TestGetHistoryMinuteTimeDataParseResponseTruncatedData(t *testing.T) {
 	msg := NewGetHistoryMinuteTimeData(&GetHistoryMinuteTimeDataRequest{
 		Date:   20260811,
@@ -371,8 +377,8 @@ func TestGetHistoryMinuteTimeDataParseResponseTruncatedData(t *testing.T) {
 	}
 }
 
-// 验证变长价格字段在续字节处截断时返回 error 而非 panic。
-// 修复前 readPriceField 仅检查起始位置，getprice 会在读取续字节时越界。
+// 验证变长价格字段在续字节处截断时，返回错误而非触发 `panic`。
+// 修复前 `readPriceField` 仅检查起始位置，读取续字节时会越界。
 func TestGetHistoryMinuteTimeDataParseResponseTruncatedVarint(t *testing.T) {
 	msg := NewGetHistoryMinuteTimeData(&GetHistoryMinuteTimeDataRequest{
 		Date:   20260811,

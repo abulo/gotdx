@@ -37,6 +37,7 @@ func TestProbeAddressesWithDialSortsByLatency(t *testing.T) {
 		"127.0.0.1:7003",
 	}
 
+	// 拨号闭包模拟三个节点：前两个可达且耗时不同，第三个拨号失败。
 	results := probeAddressesWithDial(addresses, 50*time.Millisecond, func(network, address string, timeout time.Duration) (net.Conn, error) {
 		switch address {
 		case addresses[0]:
@@ -80,6 +81,7 @@ func TestConnectUsesAddressPoolFallback(t *testing.T) {
 		}
 	}()
 
+	// 首选地址不可达，客户端应回退到地址池中的本地监听地址。
 	client := New(
 		WithTCPAddress("127.0.0.1:1"),
 		WithTCPAddressPool(ln.Addr().String()),
@@ -96,6 +98,7 @@ func TestConnectUsesAddressPoolFallback(t *testing.T) {
 	<-done
 }
 
+// stubConn 是不进行真实网络读写的 `net.Conn` 桩，供拨号探测测试替换真实连接。
 type stubConn struct{}
 
 func (stubConn) Read(b []byte) (int, error)       { return 0, io.EOF }
@@ -107,6 +110,7 @@ func (stubConn) SetDeadline(time.Time) error      { return nil }
 func (stubConn) SetReadDeadline(time.Time) error  { return nil }
 func (stubConn) SetWriteDeadline(time.Time) error { return nil }
 
+// stubAddr 是 `net.Addr` 的最小桩实现，仅返回固定的网络类型与地址文本。
 type stubAddr string
 
 func (a stubAddr) Network() string { return "tcp" }

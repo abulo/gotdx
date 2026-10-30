@@ -1,3 +1,6 @@
+// Command ex_quote 演示通过 ExQuote 查询单只扩展证券的行情报价，以美股 `TSLA` 为例打印开高低收与均价等字段。
+//
+// 运行示例：`go run ./examples/ex_quote`
 package main
 
 import (

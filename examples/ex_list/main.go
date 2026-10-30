@@ -1,3 +1,6 @@
+// Command ex_list 演示通过 ExList 分页获取扩展市场证券列表，从偏移 0 开始打印前 20 条。
+//
+// 运行示例：`go run ./examples/ex_list`
 package main
 
 import (

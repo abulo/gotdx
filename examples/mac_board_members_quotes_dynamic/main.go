@@ -1,3 +1,7 @@
+// Command mac_board_members_quotes_dynamic 演示按字段位图动态解析板块成分报价：在通用字段预设基础上
+// 追加主力净流入占比与涨跌类型字段，按涨幅百分比降序排列并过滤 `ST` 标的，取板块 `880761` 前 10 只。
+//
+// 运行示例：`go run ./examples/mac_board_members_quotes_dynamic`
 package main
 
 import (
@@ -11,11 +15,13 @@ func main() {
 	client := exampleutil.NewMACClient()
 	defer client.Disconnect()
 
+	// 字段位图决定返回哪些动态字段；先取通用预设，再追加两个额外字段。
 	fieldBitmap := gotdx.MACFieldBitmap(
 		gotdx.MACPresetCommon,
 		gotdx.MACFieldMainNetRatio,
 		gotdx.MACFieldChangeUpType,
 	)
+	// 板块代码 `880761`，取 10 只成分股，按涨幅百分比降序，过滤 `ST` 标的。
 	reply, err := client.MACBoardMembersQuotesDynamicWithFilter(
 		"880761",
 		10,

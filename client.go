@@ -24,22 +24,31 @@ const (
 	clientModeMacEx
 )
 
+// New 创建连接通达信主行情服务器的客户端，可通过传入的 `Option` 覆盖内置默认地址、超时等配置。
+// 返回的 `Client` 零值不可用，须由 `New` 系列构造；其方法可并发调用。
 func New(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeMain)
 }
 
+// NewEx 创建连接通达信扩展行情服务器（港股、美股、期货等）的客户端，可通过 `Option` 覆盖默认配置。
 func NewEx(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeEx)
 }
 
+// NewMAC 创建连接 MAC 行情主站的客户端，可通过 `Option` 覆盖默认配置。
 func NewMAC(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeMacMain)
 }
 
+// NewMACEx 创建连接 MAC 扩展行情服务器的客户端，可通过 `Option` 覆盖默认配置。
 func NewMACEx(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeMacEx)
 }
 
+// Client 是通达信行情协议客户端，封装 TCP 连接、握手、协议收发以及主站、扩展站、MAC 站的高层接口。
+//
+// Client 须由 `New`、`NewEx`、`NewMAC`、`NewMACEx` 构造，零值不可用；各方法可并发调用，同一连接上的
+// 请求由客户端内部串行化，调用方无需自行加锁。
 type Client struct {
 	conn                net.Conn
 	opt                 *Options
@@ -53,6 +62,7 @@ type Client struct {
 	decimalPointsLoaded map[uint8]bool
 }
 
+// CurrentAddress 返回当前配置（或最近连接成功）的服务器地址；客户端或选项为空时返回空字符串。
 func (client *Client) CurrentAddress() string {
 	if client == nil || client.opt == nil {
 		return ""
@@ -60,8 +70,8 @@ func (client *Client) CurrentAddress() string {
 	return client.opt.TCPAddress
 }
 
-// ProbeHosts probes the client's configured address list and returns the
-// results sorted by reachability and latency.
+// ProbeHosts 探测客户端已配置的地址列表，返回按可达性与延迟排序后的探测结果；
+// 客户端或选项为空时返回空结果。
 func (client *Client) ProbeHosts() []HostProbeResult {
 	if client == nil || client.opt == nil {
 		return nil
@@ -69,7 +79,7 @@ func (client *Client) ProbeHosts() []HostProbeResult {
 	return ProbeAddresses(client.addresses(), client.timeout())
 }
 
-// FastestHost returns the fastest reachable configured address.
+// FastestHost 返回延迟最低且可达的已配置地址；全部地址不可达时返回 ErrNoReachableHosts。
 func (client *Client) FastestHost() (HostProbeResult, error) {
 	if client == nil || client.opt == nil {
 		return HostProbeResult{}, ErrNoReachableHosts
@@ -77,6 +87,8 @@ func (client *Client) FastestHost() (HostProbeResult, error) {
 	return FastestAddress(client.addresses(), client.timeout())
 }
 
+// newClientWithOptions 基于选项与站点模式构造客户端；不同模式把对应站点的单点地址与地址池
+// 切换为后续拨号使用的默认目标。
 func newClientWithOptions(opt *Options, mode clientMode) *Client {
 	client := &Client{
 		opt:      cloneOptions(opt),
@@ -85,6 +97,7 @@ func newClientWithOptions(opt *Options, mode clientMode) *Client {
 		mode:     mode,
 	}
 
+	// 扩展站 / MAC 站点模式：用对应站点的地址与地址池覆盖主站连接配置。
 	if mode == clientModeEx {
 		client.opt.TCPAddress = client.opt.ExTCPAddress
 		client.opt.TCPAddressPool = append([]string(nil), client.opt.ExTCPAddressPool...)
@@ -101,6 +114,8 @@ func newClientWithOptions(opt *Options, mode clientMode) *Client {
 	return client
 }
 
+// cloneOptions 深拷贝 `Options`：结构体值复制，四个地址池单独分配切片，
+// 避免不同客户端的连接配置共享底层切片。
 func cloneOptions(opt *Options) *Options {
 	if opt == nil {
 		return defaultOptions()
@@ -113,6 +128,7 @@ func cloneOptions(opt *Options) *Options {
 	return &clone
 }
 
+// connect 按连接顺序逐个尝试地址，任一地址建立 TCP 连接即返回成功；全部失败时返回最后一次错误。
 func (client *Client) connect() error {
 	addresses := client.connectionOrder()
 	if len(addresses) == 0 {
@@ -121,18 +137,21 @@ func (client *Client) connect() error {
 
 	var lastErr error
 	for _, address := range addresses {
+		// 单个地址拨号失败不中断流程，记录错误后继续尝试下一个备选地址。
 		if err := client.connectToAddress(address); err != nil {
 			lastErr = err
 			continue
 		}
 		return nil
 	}
+	// 兜底错误：循环中未产生具体错误（理论上不会走到该分支）。
 	if lastErr == nil {
 		lastErr = errors.New("no available tcp address")
 	}
 	return lastErr
 }
 
+// connectToAddress 使用超时拨号单个地址，成功后把实际连通的地址写回选项。
 func (client *Client) connectToAddress(address string) error {
 	conn, err := net.DialTimeout("tcp", address, client.timeout())
 	if err != nil {
@@ -143,6 +162,7 @@ func (client *Client) connectToAddress(address string) error {
 	return nil
 }
 
+// addresses 汇总单点地址与地址池，单点地址排在前面优先尝试。
 func (client *Client) addresses() []string {
 	addresses := make([]string, 0, 1+len(client.opt.TCPAddressPool))
 	if client.opt.TCPAddress != "" {
@@ -152,6 +172,8 @@ func (client *Client) addresses() []string {
 	return addresses
 }
 
+// connectionOrder 决定本次拨号的地址顺序：未开启测速时保持原顺序；开启时先按可达性与延迟排序，
+// 不可达与重复地址去重后，再把测速未覆盖的原始地址补在末尾。
 func (client *Client) connectionOrder() []string {
 	if client == nil || client.opt == nil {
 		return nil
@@ -164,6 +186,7 @@ func (client *Client) connectionOrder() []string {
 		return addresses
 	}
 
+	// 测速全部失败时回退到原始地址顺序，避免直接中断连接。
 	results := ProbeAddresses(addresses, client.timeout())
 	if len(results) == 0 {
 		return addresses
@@ -181,6 +204,7 @@ func (client *Client) connectionOrder() []string {
 		ordered = append(ordered, result.Address)
 		seen[result.Address] = struct{}{}
 	}
+	// 再补齐测速结果中未出现的原始地址，保证候选集合不丢失。
 	for _, address := range addresses {
 		if _, ok := seen[address]; ok {
 			continue
@@ -190,6 +214,7 @@ func (client *Client) connectionOrder() []string {
 	return ordered
 }
 
+// timeout 返回连接与读写超时；客户端、选项缺失或配置非正数时回退到默认超时。
 func (client *Client) timeout() time.Duration {
 	if client == nil || client.opt == nil {
 		return time.Duration(_defaultTimeoutSec) * time.Second
@@ -201,6 +226,7 @@ func (client *Client) timeout() time.Duration {
 	return timeout
 }
 
+// closeCurrentConn 关闭并清空当前连接；关闭错误忽略，连接置空后便于后续重建。
 func (client *Client) closeCurrentConn() {
 	if client.conn != nil {
 		_ = client.conn.Close()
@@ -208,6 +234,8 @@ func (client *Client) closeCurrentConn() {
 	}
 }
 
+// connectWithHandshake 逐个地址拨号并执行握手回调；握手失败说明该连接不可用，
+// 立即丢弃后切换下一个地址重试，直到握手成功或候选地址耗尽。
 func (client *Client) connectWithHandshake(handshake func() error) error {
 	addresses := client.connectionOrder()
 	if len(addresses) == 0 {
@@ -223,6 +251,7 @@ func (client *Client) connectWithHandshake(handshake func() error) error {
 		if err := handshake(); err == nil {
 			return nil
 		} else {
+			// 握手失败的连接帧状态不可信，关闭后再尝试下一个地址。
 			lastErr = err
 			client.closeCurrentConn()
 		}
@@ -233,7 +262,10 @@ func (client *Client) connectWithHandshake(handshake func() error) error {
 	return lastErr
 }
 
+// exchange 完成一次请求-响应收发：编码请求、带超时写出发送、按帧读取响应头与负载，
+// 压缩帧按需以 `zlib` 解压；写读任一环节出错都会丢弃当前连接。
 func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.RespHeader, payload []byte, err error) {
+	// 未建立连接时直接报错，避免对空连接执行读写。
 	if client.conn == nil {
 		return nil, nil, errors.New("connection is nil")
 	}
@@ -251,6 +283,7 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 		}
 	}()
 
+	// 为本次收发设置整体截止时间，结束后清空超时以免影响后续操作。
 	_ = client.conn.SetDeadline(time.Now().Add(client.timeout()))
 	defer func() {
 		_ = client.conn.SetDeadline(time.Time{})
@@ -260,6 +293,7 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 
 	for {
 		n, err := client.conn.Write(sendData)
+		// 发送不完整时按 `MaxRetryTimes` 重试；超过重试次数或写入出错则放弃本次请求。
 		if n < len(sendData) {
 			retryTimes++
 			if retryTimes <= client.opt.MaxRetryTimes {
@@ -275,18 +309,21 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 		}
 	}
 
+	// 按固定帧长读取响应头，网络不足一帧时 `io.ReadFull` 会等待至凑满或报错。
 	headerBytes := make([]byte, proto.MessageHeaderBytes)
 	_, err = io.ReadFull(client.conn, headerBytes)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// 响应头按小端序解码。
 	headerBuf := bytes.NewReader(headerBytes)
 	var header proto.RespHeader
 	if err := binary.Read(headerBuf, binary.LittleEndian, &header); err != nil {
 		return nil, nil, err
 	}
 
+	// 负载长度超出协议上限视为非法数据，防止畸形长度触发过大的内存分配。
 	if header.ZipSize > proto.MessageMaxBytes {
 		log.Printf("msgData has bytes(%d) beyond max %d\n", header.ZipSize, proto.MessageMaxBytes)
 		return nil, nil, types.ErrBadData
@@ -298,6 +335,7 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 		return nil, nil, err
 	}
 
+	// 压缩大小与解压大小不一致表示负载经过 `zlib` 压缩，否则直接返回明文负载。
 	if header.ZipSize != header.UnZipSize {
 		var out bytes.Buffer
 		b := bytes.NewReader(msgData)
@@ -315,8 +353,10 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 	return &header, msgData, nil
 }
 
-// Connect 连接券商行情服务器
+// Connect 连接通达信主行情服务器并完成握手；按候选地址顺序逐个拨号，握手成功后返回应答。
+// 全部候选地址握手失败时返回最后一次错误。
 func (client *Client) Connect() (*proto.Hello1Reply, error) {
+	// 扩展站客户端复用内嵌主站连接完成主站握手。
 	if client.mode == clientModeEx {
 		client.mu.Lock()
 		if client.main == nil {
@@ -331,6 +371,7 @@ func (client *Client) Connect() (*proto.Hello1Reply, error) {
 	defer client.mu.Unlock()
 	obj := proto.NewHello1()
 	var reply *proto.Hello1Reply
+	// 握手回调内发送 `Hello1` 请求并解析应答，失败由外层切换下一地址重试。
 	err := client.connectWithHandshake(func() error {
 		var err error
 		reply, err = client.executeLocked(obj)
@@ -342,8 +383,10 @@ func (client *Client) Connect() (*proto.Hello1Reply, error) {
 	return reply, nil
 }
 
-// ConnectEx 连接扩展市场服务器并完成登录
+// ConnectEx 连接扩展市场服务器并完成登录握手；按候选地址顺序逐个拨号，登录成功后返回应答。
+// 全部候选地址登录失败时返回最后一次错误。
 func (client *Client) ConnectEx() (*proto.ExLoginReply, error) {
+	// 主站客户端复用内嵌扩展站连接完成扩展站登录。
 	if client.mode == clientModeMain {
 		client.mu.Lock()
 		if client.ex == nil {
@@ -369,7 +412,8 @@ func (client *Client) ConnectEx() (*proto.ExLoginReply, error) {
 	return reply, nil
 }
 
-// Disconnect 断开服务器
+// Disconnect 断开当前连接，并关闭关联的主站、扩展站连接；返回关闭过程中遇到的首个错误，
+// 后续关闭错误不会覆盖先出现的错误。
 func (client *Client) Disconnect() error {
 	client.mu.Lock()
 	conn := client.conn
@@ -384,11 +428,13 @@ func (client *Client) Disconnect() error {
 	if conn != nil {
 		err = conn.Close()
 	}
+	// 内嵌主站可能就是自身，跳过避免重复关闭；错误不覆盖主连接错误。
 	if main != nil && main != client {
 		if closeErr := main.Disconnect(); err == nil {
 			err = closeErr
 		}
 	}
+	// 扩展站与主站为不同连接时再级联关闭。
 	if ex != nil && ex != client && ex != main {
 		if closeErr := ex.Disconnect(); err == nil {
 			err = closeErr

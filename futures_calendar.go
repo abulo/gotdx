@@ -1,4 +1,3 @@
-// futures_calendar 提供 MAC 期货 K 线交易日到自然时间的 SQLite 转换。
 package gotdx
 
 import (
@@ -12,9 +11,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// futuresCalendarLocation 是期货交易日历与自然时间转换统一使用的时区。
 const futuresCalendarLocation = "Asia/Shanghai"
 
-// resolveMACFuturesDateTimes 用期货交易日历将 MAC 期货 K 线转换为自然时间。
+// resolveMACFuturesDateTimes 使用期货交易日历把 MAC 期货 K 线的夜盘条目修正为自然时间。
+//
+// 无法识别交易所前缀或未配置日历路径时直接返回，不修改原条目；同一交易日的上一交易日
+// 查询结果在本次调用内缓存。夜盘时段中 21 点之后的条目归属上一交易日，其余夜盘秒数归属
+// 下一自然日。日历打开或查询失败时返回包装后的错误。
 func resolveMACFuturesDateTimes(items []proto.MACSymbolBar, code, calendarPath string) error {
 	exchange, ok := futuresExchange(code)
 	if !ok || calendarPath == "" {
@@ -42,6 +46,7 @@ func resolveMACFuturesDateTimes(items []proto.MACSymbolBar, code, calendarPath s
 			preTradeDates[items[index].RawYMD] = preTradeDate
 		}
 
+		// 21 点后属于上一交易日当晚夜盘；凌晨时段已跨入下一自然日。
 		if seconds >= 21*60*60 {
 			items[index].DateTime = combineFuturesDateTime(preTradeDate, seconds)
 			continue
@@ -51,7 +56,8 @@ func resolveMACFuturesDateTimes(items []proto.MACSymbolBar, code, calendarPath s
 	return nil
 }
 
-// futuresExchange 根据期货合约代码前缀映射 Tushare 交易所代码。
+// futuresExchange 根据期货合约代码前缀映射交易所代码；识别失败时第二个返回值为 `false`。
+// 返回的交易所代码沿用 `Tushare` 交易日历中的标识（如 SHFE、DCE、CZCE 等）。
 func futuresExchange(code string) (string, bool) {
 	prefix := strings.TrimRight(strings.ToUpper(strings.TrimSpace(code)), "0123456789")
 	switch prefix {
@@ -70,14 +76,17 @@ func futuresExchange(code string) (string, bool) {
 	}
 }
 
-// isMACNightSession 判断 MAC bar 是否落在需要交易日历转换的期货夜盘时段。
+// isMACNightSession 判断 MAC K 线条目是否落在需要交易日历修正的夜盘时段：
+// 当日 21:00 之后或次日 05:00 之前。
 func isMACNightSession(seconds uint32) bool {
 	return seconds >= 21*60*60 || seconds <= 5*60*60
 }
 
-// futuresPreTradeDate 查询指定期货交易日对应的上一交易日。
+// futuresPreTradeDate 查询指定期货交易日对应的上一交易日，返回上海时区的自然日零点；
+// 日历中查不到记录时返回包装后的 SQL 查询错误。
 func futuresPreTradeDate(db *sql.DB, exchange string, tradeDate uint32) (time.Time, error) {
 	var value string
+	// 交易日历中 pretrade_date 即上一自然交易日，直接取该交易日自身的记录。
 	if err := db.QueryRow(`
 		SELECT pretrade_date
 		FROM futures_trade_calendar
@@ -87,12 +96,14 @@ func futuresPreTradeDate(db *sql.DB, exchange string, tradeDate uint32) (time.Ti
 	return parseCalendarDate(value)
 }
 
-// combineFuturesDateTime 将日历自然日与 MAC seconds 组合为上海时区时间。
+// combineFuturesDateTime 把日历自然日与 MAC 条目中的当日秒数组合为带时区的时间，
+// 秒数按时、分、秒拆分，不做跨天进位处理。
 func combineFuturesDateTime(date time.Time, seconds uint32) time.Time {
 	return time.Date(date.Year(), date.Month(), date.Day(), int(seconds/3600), int(seconds%3600/60), int(seconds%60), 0, date.Location())
 }
 
-// parseCalendarDate 将 SQLite 中的 YYYYMMDD 日期解析为上海时区起点。
+// parseCalendarDate 把 `SQLite` 日历中的 `YYYYMMDD` 日期字符串解析为上海时区当日零点；
+// 长度非法、数值非法或组合出不存在日期时返回错误。
 func parseCalendarDate(value string) (time.Time, error) {
 	if len(value) != 8 {
 		return time.Time{}, fmt.Errorf("invalid calendar date %q", value)

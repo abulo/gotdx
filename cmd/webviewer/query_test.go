@@ -9,6 +9,7 @@ import (
 	"github.com/bensema/gotdx/proto"
 )
 
+// hasMethodDef 判断方法清单中是否存在指定方法标识，供方法覆盖性断言使用。
 func hasMethodDef(key string) bool {
 	for _, def := range methodDefs {
 		if def.Key == key {

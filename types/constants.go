@@ -6,8 +6,13 @@ import (
 	"strings"
 )
 
+// Market 标识证券所属的交易市场，底层为 `uint8`，取值与协议市场编号一一对应。
+//
+// 该类型为无状态值类型，可按值安全传递；零值表示未知市场。
+// String 返回两位大写代码用于拼接证券代码，`Name` 返回中文市场名，`Uint8` 返回协议请求使用的数值。
 type Market uint8
 
+// `Market*` 市场代码枚举，按顺序依次取值 0 至 4。
 const (
 	MarketSZ Market = iota
 	MarketSH
@@ -16,6 +21,7 @@ const (
 	MarketUSA
 )
 
+// 品种类型枚举，区分股票、指数、板块与 ETF。
 const (
 	STOCK = iota // 股票
 	INDEX        // 指数
@@ -23,6 +29,7 @@ const (
 	ETF          // ETF
 )
 
+// `Market*Name` 各市场对应的两位大写代码字符串。
 const (
 	MarketSZName string = "SZ"
 	MarketSHName string = "SH"
@@ -31,8 +38,10 @@ const (
 	MarketUSName string = "US"
 )
 
+// Uint8 返回 `Market` 的底层 `uint8` 数值。
 func (obj Market) Uint8() uint8 { return uint8(obj) }
 
+// String 返回 `Market` 对应的两位大写代码字符串；未知市场返回 `unknown`。
 func (obj Market) String() string {
 	switch obj {
 	case MarketSZ:
@@ -50,6 +59,7 @@ func (obj Market) String() string {
 	}
 }
 
+// Name 返回 `Market` 对应的中文市场名；未知市场返回“未知”。
 func (obj Market) Name() string {
 	switch obj {
 	case MarketSH:
@@ -67,9 +77,10 @@ func (obj Market) Name() string {
 	}
 }
 
-// BlockType 板块枚举
+// BlockType 表示个股所属的板块分类，由 `Block` 与 `GetStockBlock` 按代码前缀判定得出。
 type BlockType uint8
 
+// `BlockType*` 个股板块分类集合，覆盖主板、科创板、创业板、北证、港股、美股等。
 const (
 	BlockMainBoard BlockType = iota // 主板
 	BlockSTAR                       // 科创板
@@ -80,12 +91,16 @@ const (
 	BlockOther                      // 其他
 )
 
-// 获取股票的板块
+// Block 根据证券代码判定个股所属板块分类。
+//
+// 沪深北 A 股按代码前缀进一步细分主板、科创板、创业板与北证；港股与美股直接归入对应海外板块。
+// 代码无法解析时返回 `BlockOther` 与错误，市场未知时返回 `BlockOther`。
 func Block(code string) (BlockType, error) {
 	market, symbol, err := DecodeStockCode(code)
 	if err != nil {
 		return BlockOther, err
 	}
+	// 板块判定只依赖代码前缀，统一拼接后缀仅为复用 `GetStockBlock` 的入参格式。
 	newCode := fmt.Sprintf("%s.%s", symbol, MarketSH.String())
 	switch market {
 	case MarketSH:
@@ -103,27 +118,28 @@ func Block(code string) (BlockType, error) {
 	}
 }
 
-// GetStockBlock 根据6位股票代码返回板块
-// code:纯6位数字字符串,如"600000","688001","300750","920001","830799"
+// GetStockBlock 根据六位股票代码判定所属 A 股板块。
+//
+// 入参为六位数字代码（如 `600000`、`688001`、`300750`、`920001`、`830799`）；
+// 非六位代码归入 `BlockOther`，其余按前缀判定科创板、创业板、北证、主板，不匹配者归入其他板块。
 func GetStockBlock(code string) BlockType {
-	// 统一去除后缀.SH/.SZ/.BJ，只保留数字
+	// 统一去除常见交易所后缀，仅保留代码段参与前缀判定。
 	code = strings.TrimSuffix(code, ".SH")
 	code = strings.TrimSuffix(code, ".SZ")
 	code = strings.TrimSuffix(code, ".BJ")
 
+	// 长度必须为六位，否则前缀判定不可靠，归入其他板块。
 	if len(code) != 6 {
 		return BlockOther
 	}
 
-	// 截取前3位
 	prefix3 := code[:3]
 	prefix1 := code[:1]
-	// 截取前2位
 	switch {
-	// 科创板：688开头
+	// 科创板：688 开头。
 	case prefix3 == "688":
 		return BlockSTAR
-	// 创业板：300、301
+	// 创业板：300、301 开头。
 	case prefix1 == "3":
 		return BlockChiNext
 	case prefix1 == "9":
@@ -135,6 +151,7 @@ func GetStockBlock(code string) BlockType {
 	}
 }
 
+// `ExMarket*` 扩展行情协议的大类品种与市场代码，编号与服务端品种类型一一对应。
 const (
 	ExMarketStock        uint8 = 1  // 股票
 	ExMarketHK           uint8 = 2  // 香港
@@ -153,6 +170,8 @@ const (
 	ExMarketSG           uint8 = 15 // 新加坡
 )
 
+// `ExCategory*` 扩展市场细分类别代码，作为扩展行情请求的品类参数使用。
+// 代码与交易所含义见常量名称缩写（郑州、大连、上海、中金所、COMEX、NYMEX、CBOT 等），个别代码语义待确认。
 const (
 	ExCategoryTempStock           uint8 = 1
 	ExCategoryZZFuturesOption     uint8 = 4
@@ -209,6 +228,7 @@ const (
 	ExCategorySZSEIndex           uint8 = 102
 )
 
+// `Default*` 各行情接口未显式指定条数或大小时使用的默认值。
 const (
 	DefaultSecurityListCount = 1600
 	DefaultTickChartCount    = 0xba00
@@ -221,12 +241,14 @@ const (
 	DefaultDownloadSize      = 0x7530
 )
 
+// `Adjust*` K 线复权方式：0 不复权，1 前复权，2 后复权。
 const (
 	AdjustNone uint16 = 0
 	AdjustQFQ  uint16 = 1
 	AdjustHFQ  uint16 = 2
 )
 
+// `Category*` 主行情证券列表分类代码，用于按市场拉取证券列表。
 const (
 	CategorySH  uint8 = 0  // 上证A
 	CategorySZ  uint8 = 2  // 深证A
@@ -237,6 +259,7 @@ const (
 	CategoryCYB uint8 = 14 // 创业板
 )
 
+// `Filter*` 行情列表筛选条件位图，可按位组合同时排除新股、科创板、ST 股、创业板、港股通、北交所、核准制与注册制标的。
 const (
 	FilterNew          uint16 = 1
 	FilterKC           uint16 = 2
@@ -248,6 +271,9 @@ const (
 	FilterRegistration uint16 = 128
 )
 
+// `Sort*` 行情列表排序字段代码，指定行情榜单按哪一个字段排序。
+// 字段语义按常量名称前缀区分：昨收、买卖价、成交量、成交额、涨跌、内外盘、委比、锁定、换手率、
+// 量比、主力净流入、涨跌停时间等。
 const (
 	SortCode              uint16 = 0x0
 	SortName              uint16 = 0x1
@@ -317,12 +343,14 @@ const (
 	SortPEStatic          uint16 = 0x3ef
 )
 
+// `SortOrder*` 行情列表排序方向：0 默认，1 降序，2 升序。
 const (
 	SortOrderNone uint16 = 0
 	SortOrderDesc uint16 = 1
 	SortOrderAsc  uint16 = 2
 )
 
+// `BlockFile*` 通达信服务端板块数据文件名，依次对应默认板块、地区板块、风格板块与概念板块。
 const (
 	BlockFileDefault = "block.dat"
 	BlockFileZS      = "block_zs.dat"
@@ -330,6 +358,8 @@ const (
 	BlockFileGN      = "block_gn.dat"
 )
 
+// `BoardType*` 板块类型代码，用于板块列表与 MAC 板块接口的板块分类参数。
+// 已知取值：0 行业、1 行业二级、3 概念、4 风格、5 地区、6 未知、7 其他行业、255 全部；其余细分编码语义待确认。
 const (
 	BoardTypeHY      uint16 = 0
 	BoardTypeHY2     uint16 = 1
@@ -343,6 +373,7 @@ const (
 	BoardTypeAll     uint16 = 255
 )
 
+// `ExBoardType*` 扩展市场（港股、美股）板块类型代码，分别对应全部、概念与行业板块。
 const (
 	ExBoardTypeHKAll uint16 = 0
 	ExBoardTypeHKGN  uint16 = 1
@@ -352,6 +383,7 @@ const (
 	ExBoardTypeUSHY  uint16 = 5
 )
 
+// KLINE_TYPE_* K 线周期类型代码，作为 K 线请求的周期参数使用。
 const (
 	KLINE_TYPE_5MIN      = 0  // 5 分钟K 线
 	KLINE_TYPE_15MIN     = 1  // 15 分钟K 线
@@ -368,6 +400,7 @@ const (
 	KLINE_TYPE_SECONDS   = 13 // 多秒K 线
 )
 
+// ErrBadData 是服务端返回数据超过协议可承受大小（8M 以上）时抛出的错误。
 var (
 	ErrBadData = errors.New("more than 8M data")
 )

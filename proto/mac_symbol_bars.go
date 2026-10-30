@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// MACSymbolBars 查询单只标的的 K 线序列与汇总行情。
+//
+// 使用时先由 NewMACSymbolBars 构造对象，再依次调用 BuildRequest、ParseResponse，最后读取响应结果。
+// 该对象面向单次请求使用，内部未做并发同步，不应在多个并发协程间共享；零值不可直接使用。
 type MACSymbolBars struct {
 	reqHeader  *ReqHeader
 	respHeader *RespHeader
@@ -15,6 +19,7 @@ type MACSymbolBars struct {
 	reply      *MACSymbolBarsReply
 }
 
+// MACSymbolBarsRequest 保存 K 线查询的市场、代码、周期、起始位置、条数与复权标志参数。
 type MACSymbolBarsRequest struct {
 	Market   uint16
 	Code     [22]byte
@@ -31,11 +36,12 @@ type MACSymbolBarsRequest struct {
 	Reserved [4]byte
 }
 
+// MACSymbolBarsReply 保存 K 线响应的标的标识、K 线序列与汇总行情数据。
 type MACSymbolBarsReply struct {
 	Market       uint16
 	Code         string
 	Period       uint8
-	Unknown      uint16
+	Unknown      uint16 // 协议保留槽位，语义待确认
 	Count        uint16
 	Start        uint32
 	List         []MACSymbolBar
@@ -58,10 +64,11 @@ type MACSymbolBarsReply struct {
 	IndustryCode string
 }
 
+// MACSymbolBar 表示一根 K 线，包含开高低收、量额、流通股本、昨收基准与涨跌信息。
 type MACSymbolBar struct {
 	DateTime    time.Time
-	RawYMD      uint32 // 原始响应中的交易日字段，未经时间修正。
-	RawSeconds  uint32 // 原始响应中的当日秒数字段，未经时间修正。
+	RawYMD      uint32 // 原始交易日字段，未经时间修正
+	RawSeconds  uint32 // 原始当日秒数字段，未经时间修正
 	Open        float64
 	High        float64
 	Low         float64
@@ -76,6 +83,7 @@ type MACSymbolBar struct {
 	RiseRate    float64 // 涨跌幅
 }
 
+// NewMACSymbolBars 创建 K 线查询对象；请求参数为空时使用内置默认参数。
 func NewMACSymbolBars(req *MACSymbolBarsRequest) *MACSymbolBars {
 	obj := &MACSymbolBars{
 		reqHeader:  new(ReqHeader),
@@ -110,10 +118,12 @@ func (obj *MACSymbolBars) applyRequest(req *MACSymbolBarsRequest) {
 	if req.Flag4 == 0 {
 		req.Flag4 = 1
 	}
+	// 请求条数加一：多取一条作为首根 K 线的昨收基准，解析阶段再舍弃该首条。
 	req.Count = req.Count + 1
 	obj.request = req
 }
 
+// BuildRequest 编码请求参数并返回完整协议报文；序列化失败时返回错误。
 func (obj *MACSymbolBars) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
 	if err := binary.Write(payload, binary.LittleEndian, obj.request); err != nil {
@@ -122,12 +132,14 @@ func (obj *MACSymbolBars) BuildRequest() ([]byte, error) {
 	return buildExRequest(KMSG_MACSYMBOLBARS, payload.Bytes())
 }
 
+// ParseResponse 解码服务端返回的字节流并填充响应；报文长度不足或 K 线记录区不完整时返回错误。
 func (obj *MACSymbolBars) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) < 33 {
 		return fmt.Errorf("invalid mac symbol bars response length: %d", len(data))
 	}
 
+	// 头部：市场（0:2）、GBK 代码（2:14）、周期（24）、计数与起始偏移（27:33）。
 	obj.reply.Market = binary.LittleEndian.Uint16(data[:2])
 	obj.reply.Code = Utf8ToGbk(data[2:14])
 	obj.reply.Period = data[24]
@@ -136,11 +148,13 @@ func (obj *MACSymbolBars) ParseResponse(header *RespHeader, data []byte) error {
 	obj.reply.Start = binary.LittleEndian.Uint32(data[29:33])
 
 	pos := 33
-	var preCloseRaw float64 // 昨收盘价
+	var preCloseRaw float64 // 滚动保存上一根收盘价，作为当前根的昨收价
 	for i := uint16(0); i < obj.reply.Count; i++ {
 		if pos+36 > len(data) {
 			return fmt.Errorf("invalid mac symbol bar item %d", i)
 		}
+		// K 线记录布局：打包日期（0:4）、当日秒数（4:8），其后八段单精度浮点依次为
+		// 开、高、低、收、成交额、成交量、流通股本。
 		ymd := binary.LittleEndian.Uint32(data[pos : pos+4])
 		seconds := binary.LittleEndian.Uint32(data[pos+4 : pos+8])
 		item := MACSymbolBar{
@@ -155,23 +169,28 @@ func (obj *MACSymbolBars) ParseResponse(header *RespHeader, data []byte) error {
 			Vol:         float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+28 : pos+32]))),
 			FloatShares: float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+32 : pos+36]))),
 		}
+		// 昨收与前收取上一根收盘价，随后把基准滚动为当前收盘价，再计算涨跌价与涨跌幅。
 		item.PreClose = preCloseRaw
 		item.LastClose = preCloseRaw
 		preCloseRaw = item.Close
 		item.RiseRate = item.GetRiseRate()
 		item.RisePrice = item.GetRisePrice()
 		pos += 36
+		// 首条仅用于初始化昨收基准，不进入结果列表。
 		if i == 0 {
 			continue
 		}
 		obj.reply.List = append(obj.reply.List, item)
 	}
+	// 结果条数比报文条数少一，即被舍弃的首条基准。
 	obj.reply.Count = obj.reply.Count - 1
 
+	// 汇总行情段不足 120 字节时直接返回，不再解析尾部字段。
 	if pos+120 > len(data) {
 		return nil
 	}
 
+	// 汇总段布局与行情快照尾部一致：名称、精度、类别、量纲、日期时间、开高低收、量额、换手、均价、行业。
 	obj.reply.Name = Utf8ToGbk(data[pos : pos+44])
 	obj.reply.Decimal = data[pos+44]
 	obj.reply.Category = binary.LittleEndian.Uint16(data[pos+45 : pos+47])
@@ -195,15 +214,16 @@ func (obj *MACSymbolBars) ParseResponse(header *RespHeader, data []byte) error {
 	return nil
 }
 
+// GetRisePrice 返回收盘价相对昨收价的涨跌价；昨收价为 0 时改用开盘价作基准，避免差值失真。
 func (bar MACSymbolBar) GetRisePrice() float64 {
 	if bar.PreClose == 0 {
-		//稍微数据准确点，没减去0这么夸张，还是不准的
+		// 昨收缺失时退用开盘价，避免差值被放大为接近收盘价本身。
 		return bar.Close - bar.Open
 	}
 	return bar.Close - bar.PreClose
 }
 
-// RiseRate 涨跌比例/涨跌幅
+// GetRiseRate 返回以昨收价为基准的涨跌幅百分比；昨收价为 0 时改用开盘价作基准。
 func (bar MACSymbolBar) GetRiseRate() float64 {
 	if bar.PreClose == 0 {
 		return (bar.Close - bar.Open) / (bar.Open) * 100
@@ -211,11 +231,12 @@ func (bar MACSymbolBar) GetRiseRate() float64 {
 	return (bar.Close - bar.PreClose) / (bar.PreClose) * 100
 }
 
+// Response 返回解码完成的 K 线响应；未调用 ParseResponse 前内容为零值。
 func (obj *MACSymbolBars) Response() *MACSymbolBarsReply {
 	return obj.reply
 }
 
-// combineMACDateTime 组合 MAC 原始交易日和秒数，不推断自然日期。
+// combineMACDateTime 组合打包交易日与当日秒数为本地时间，不另行推断自然日期。
 func combineMACDateTime(ymd uint32, seconds uint32) time.Time {
 	year := int(ymd / 10000)
 	month := int((ymd % 10000) / 100)

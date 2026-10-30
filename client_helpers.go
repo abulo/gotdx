@@ -7,8 +7,10 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
+// ErrMarketCodeCount 表示传入的市场列表与证券代码列表长度不一致。
 var ErrMarketCodeCount = errors.New("market code count error")
 
+// execute 加锁执行一次协议请求，保证同一连接上的请求串行化，避免并发读写打乱协议帧。
 func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -16,6 +18,7 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 	return client.executeLocked(protocol)
 }
 
+// executeLocked 在调用方已持锁的前提下执行协议流程：收发数据、解析响应、返回业务应答对象。
 func (client *Client) executeLocked[T any](protocol proto.Protocol[T]) (T, error) {
 	var zero T
 
@@ -23,6 +26,7 @@ func (client *Client) executeLocked[T any](protocol proto.Protocol[T]) (T, error
 	if err != nil {
 		return zero, err
 	}
+	// 协议解析失败时返回零值与错误，由上层决定是否重建连接。
 	if err := protocol.ParseResponse(header, payload); err != nil {
 		return zero, err
 	}
@@ -77,6 +81,7 @@ func makeFixed43(value string) [43]byte {
 	return out
 }
 
+// makeStocks 把市场与代码两两配对组装成主站证券列表；两者长度不一致时返回 ErrMarketCodeCount。
 func makeStocks(markets []uint8, codes []string) ([]proto.Stock, error) {
 	if len(markets) != len(codes) {
 		return nil, ErrMarketCodeCount
@@ -92,6 +97,7 @@ func makeStocks(markets []uint8, codes []string) ([]proto.Stock, error) {
 	return stocks, nil
 }
 
+// makeExStocks 把扩展分类与代码两两配对组装成扩展站证券列表；两者长度不一致时返回错误。
 func makeExStocks(categories []uint8, codes []string) ([]proto.ExStock, error) {
 	if len(categories) != len(codes) {
 		return nil, ErrMarketCodeCount
@@ -107,6 +113,8 @@ func makeExStocks(categories []uint8, codes []string) ([]proto.ExStock, error) {
 	return stocks, nil
 }
 
+// quotesSortReverse 把布尔排序方向转换为协议方向码：代码排序不区分升降序，恒为 0；
+// 其余排序 1 为升序、2 为降序。
 func quotesSortReverse(sortType uint16, reverse bool) uint16 {
 	if sortType == types.SortCode {
 		return 0

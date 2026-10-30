@@ -1,3 +1,6 @@
+// Command ex_board_list 演示通过 ExBoardList 拉取扩展市场行业板块列表，并逐行打印板块代码、名称与行情字段。
+//
+// 运行示例：`go run ./examples/ex_board_list`
 package main
 
 import (
@@ -11,6 +14,7 @@ func main() {
 	client := exampleutil.NewExClient()
 	defer client.Disconnect()
 
+	// 板块类型取行业板块，从偏移 0 开始请求 20 条记录。
 	items, err := client.ExBoardList(types.BoardTypeHY, 0, 20)
 	if err != nil {
 		log.Fatalln(err)

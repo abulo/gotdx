@@ -1,3 +1,7 @@
+// Command mac_market_monitor 演示通过 MACMarketMonitor 获取市场异动监控数据，深市类别下从偏移 0 取前 20 条，
+// 打印异动描述、数值与各原始字段。
+//
+// 运行示例：`go run ./examples/mac_market_monitor`
 package main
 
 import (

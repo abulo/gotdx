@@ -1,3 +1,6 @@
+// Command stock_paged_list 演示先查询市场证券总数，再按固定页大小逐页翻页遍历深市证券列表，并打印每页首尾证券。
+//
+// 运行示例：`go run ./examples/stock_paged_list`
 package main
 
 import (
@@ -7,6 +10,7 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
+// 分页参数：每页条数、最多翻页数、起始页偏移。
 const (
 	pageSize  = 800
 	maxPages  = 3
@@ -17,6 +21,7 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
+	// 先查询深市证券总数，作为分页遍历的上界参考。
 	total, err := client.StockCount(types.MarketSZ.Uint8())
 	if err != nil {
 		log.Fatalln(err)
@@ -24,6 +29,7 @@ func main() {
 
 	log.Printf("market=SZ total=%d page_size=%d max_pages=%d", total, pageSize, maxPages)
 
+	// 逐页翻取证券列表；某页返回为空时说明已到列表末尾，提前结束。
 	var fetched int
 	for page := startPage; page < maxPages; page++ {
 		start := uint32(page * pageSize)
@@ -35,6 +41,7 @@ func main() {
 			break
 		}
 
+		// 记录本页首尾证券，便于观察分页衔接是否连续。
 		first := items[0]
 		last := items[len(items)-1]
 		fetched += len(items)

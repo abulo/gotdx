@@ -7,6 +7,10 @@ import (
 	"math"
 )
 
+// MACBoardMembers 查询指定板块的成分股列表，仅返回市场、代码与名称。
+//
+// 使用时先由 NewMACBoardMembers 构造对象，再依次调用 BuildRequest、ParseResponse，最后读取响应结果。
+// 该对象面向单次请求使用，内部未做并发同步，不应在多个并发协程间共享；零值不可直接使用。
 type MACBoardMembers struct {
 	reqHeader  *ReqHeader
 	respHeader *RespHeader
@@ -14,6 +18,7 @@ type MACBoardMembers struct {
 	reply      *MACBoardMembersReply
 }
 
+// MACBoardMembersRequest 保存成分股列表查询的板块代码、排序、起始位置与分页参数。
 type MACBoardMembersRequest struct {
 	BoardCode uint32
 	Reserved1 [9]byte
@@ -25,6 +30,7 @@ type MACBoardMembersRequest struct {
 	Extra     [20]byte
 }
 
+// MACBoardMembersReply 保存成分股列表查询返回的板块名称、计数与逐条成分股。
 type MACBoardMembersReply struct {
 	Name   string
 	Count  uint16
@@ -32,12 +38,14 @@ type MACBoardMembersReply struct {
 	Stocks []MACBoardMemberItem
 }
 
+// MACBoardMemberItem 表示一只板块成分股的市场、代码与名称。
 type MACBoardMemberItem struct {
 	Name   string
 	Market uint16
 	Symbol string
 }
 
+// NewMACBoardMembers 创建成分股列表查询对象；请求参数为空时使用内置默认参数。
 func NewMACBoardMembers(req *MACBoardMembersRequest) *MACBoardMembers {
 	obj := &MACBoardMembers{
 		reqHeader:  new(ReqHeader),
@@ -71,6 +79,7 @@ func (obj *MACBoardMembers) applyRequest(req *MACBoardMembersRequest) {
 	obj.request = req
 }
 
+// BuildRequest 编码请求参数并返回完整协议报文；序列化失败时返回错误。
 func (obj *MACBoardMembers) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
 	if err := binary.Write(payload, binary.LittleEndian, obj.request); err != nil {
@@ -79,21 +88,27 @@ func (obj *MACBoardMembers) BuildRequest() ([]byte, error) {
 	return buildExRequest(KMSG_MACBOARDMEMBERS, payload.Bytes())
 }
 
+// ParseResponse 解码服务端返回的字节流并填充响应；报文长度不足或记录区不完整时返回错误。
 func (obj *MACBoardMembers) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
+	// 响应头不足 26 字节时直接返回错误，避免后续切片越界。
 	if len(data) < 26 {
 		return fmt.Errorf("invalid mac board members response length: %d", len(data))
 	}
 
+	// 头部布局：GBK 板块名称（16:20）、成分股总数（20:24）、本次条数（24:26），均按小端序读取。
 	obj.reply.Name = Utf8ToGbk(data[16:20])
 	obj.reply.Total = binary.LittleEndian.Uint32(data[20:24])
 	obj.reply.Count = binary.LittleEndian.Uint16(data[24:26])
 
+	// 记录区自偏移 26 开始，每条定长 68 字节。
 	pos := 26
 	for i := uint16(0); i < obj.reply.Count; i++ {
+		// 剩余字节不足一条记录时中止并报错，防止越界读取。
 		if pos+68 > len(data) {
 			return fmt.Errorf("invalid mac board member item %d", i)
 		}
+		// 记录布局：市场（0:2）、GBK 代码（2:8）、GBK 名称（24:40），中间偏移为填充或保留区。
 		item := MACBoardMemberItem{
 			Market: binary.LittleEndian.Uint16(data[pos : pos+2]),
 			Symbol: Utf8ToGbk(data[pos+2 : pos+8]),
@@ -106,10 +121,15 @@ func (obj *MACBoardMembers) ParseResponse(header *RespHeader, data []byte) error
 	return nil
 }
 
+// Response 返回解码完成的成分股列表响应；未调用 ParseResponse 前内容为零值。
 func (obj *MACBoardMembers) Response() *MACBoardMembersReply {
 	return obj.reply
 }
 
+// MACBoardMembersQuotes 查询指定板块成分股的固定字段实时报价快照。
+//
+// 使用时先由 NewMACBoardMembersQuotes 构造对象，再依次调用 BuildRequest、ParseResponse，最后读取响应结果。
+// 该对象面向单次请求使用，内部未做并发同步，不应在多个并发协程间共享；零值不可直接使用。
 type MACBoardMembersQuotes struct {
 	reqHeader  *ReqHeader
 	respHeader *RespHeader
@@ -117,6 +137,7 @@ type MACBoardMembersQuotes struct {
 	reply      *MACBoardMembersQuotesReply
 }
 
+// MACBoardMembersQuotesRequest 保存成分股报价查询的板块代码、排序、分页与字段位图参数。
 type MACBoardMembersQuotesRequest struct {
 	BoardCode uint32
 	Reserved1 [9]byte
@@ -128,6 +149,7 @@ type MACBoardMembersQuotesRequest struct {
 	Extra     [21]byte
 }
 
+// MACBoardMembersQuotesReply 保存成分股报价查询返回的板块名称、计数与逐条报价。
 type MACBoardMembersQuotesReply struct {
 	Name   string
 	Count  uint16
@@ -135,6 +157,10 @@ type MACBoardMembersQuotesReply struct {
 	Stocks []MACBoardMemberQuoteItem
 }
 
+// MACBoardMemberQuoteItem 表示一只成分股的固定字段实时报价快照。
+//
+// 槽位顺序与服务端 128 字节指标区一一对应；部分占位字段与别名字段的原始语义待确认，
+// 实现未据此推断额外协议含义。
 type MACBoardMemberQuoteItem struct {
 	Name               string
 	Market             uint16
@@ -195,6 +221,7 @@ type MACBoardMemberQuoteItem struct {
 	UnknownClosePrice  float64
 }
 
+// NewMACBoardMembersQuotes 创建成分股报价查询对象；请求参数为空时使用内置默认参数与默认位图。
 func NewMACBoardMembersQuotes(req *MACBoardMembersQuotesRequest) *MACBoardMembersQuotes {
 	obj := &MACBoardMembersQuotes{
 		reqHeader:  new(ReqHeader),
@@ -236,14 +263,18 @@ func (obj *MACBoardMembersQuotes) applyRequest(req *MACBoardMembersQuotesRequest
 	obj.request = req
 }
 
+// BuildRequest 编码请求参数并返回完整协议报文；写入失败时返回错误。
 func (obj *MACBoardMembersQuotes) BuildRequest() ([]byte, error) {
 	payload := new(bytes.Buffer)
+	// 结构体对齐与线上字节布局不一致，不能整体序列化，需按线上字段顺序逐字段手工写入。
 	if err := binary.Write(payload, binary.LittleEndian, obj.request.BoardCode); err != nil {
 		return nil, err
 	}
+	// 9 字节保留区原样透传。
 	if _, err := payload.Write(obj.request.Reserved1[:]); err != nil {
 		return nil, err
 	}
+	// 排序类型、起始偏移、分页大小、保留字节、排序方向依次按线上顺序写入。
 	if err := binary.Write(payload, binary.LittleEndian, obj.request.SortType); err != nil {
 		return nil, err
 	}
@@ -259,41 +290,51 @@ func (obj *MACBoardMembersQuotes) BuildRequest() ([]byte, error) {
 	if err := binary.Write(payload, binary.LittleEndian, obj.request.SortOrder); err != nil {
 		return nil, err
 	}
+	// 21 字节位图扩展段整体写入。
 	if _, err := payload.Write(obj.request.Extra[:]); err != nil {
 		return nil, err
 	}
 	return buildExRequest(KMSG_MACBOARDMEMBERS, payload.Bytes())
 }
 
+// ParseResponse 解码服务端返回的字节流并填充响应；报文长度不足或记录区不完整时返回错误。
 func (obj *MACBoardMembersQuotes) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
+	// 响应头不足 26 字节时直接返回错误，避免后续切片越界。
 	if len(data) < 26 {
 		return fmt.Errorf("invalid mac board members quotes response length: %d", len(data))
 	}
 
+	// 头部布局：GBK 板块名称（16:20）、成分股总数（20:24）、本次条数（24:26）。
 	obj.reply.Name = Utf8ToGbk(data[16:20])
 	obj.reply.Total = binary.LittleEndian.Uint32(data[20:24])
 	obj.reply.Count = binary.LittleEndian.Uint16(data[24:26])
 
 	pos := 26
 	for i := uint16(0); i < obj.reply.Count; i++ {
+		// 剩余字节不足一条记录时中止并报错，防止越界读取。
 		if pos+196 > len(data) {
 			return fmt.Errorf("invalid mac board member quote item %d", i)
 		}
+		// 身份段：市场（0:2）、GBK 代码（2:8）、GBK 名称（24:48）。
 		item := MACBoardMemberQuoteItem{
 			Market: binary.LittleEndian.Uint16(data[pos : pos+2]),
 			Symbol: Utf8ToGbk(data[pos+2 : pos+8]),
 			Name:   Utf8ToGbk(data[pos+24 : pos+48]),
 		}
 
+		// 指标区自偏移 68 起共 128 字节，每槽 4 字节，按槽位索引分别解码为浮点或计数。
 		metrics := data[pos+68 : pos+196]
+		// 闭包：将指定槽位的 4 字节还原为单精度浮点后再转双精度。
 		floatAt := func(index int) float64 {
 			return float64(math.Float32frombits(binary.LittleEndian.Uint32(metrics[index*4 : index*4+4])))
 		}
+		// 闭包：将指定槽位按小端序读取为四字节无符号整数，用于计数、位图与精度标志。
 		uintAt := func(index int) uint32 {
 			return binary.LittleEndian.Uint32(metrics[index*4 : index*4+4])
 		}
 
+		// 槽位 0 到 4 为昨收、开、高、低、收；槽位 5 为成交量。
 		item.PreClose = floatAt(0)
 		item.Open = floatAt(1)
 		item.High = floatAt(2)
@@ -301,6 +342,7 @@ func (obj *MACBoardMembersQuotes) ParseResponse(header *RespHeader, data []byte)
 		item.Close = floatAt(4)
 		item.Vol = uintAt(5)
 		item.Unknown6 = float64(item.Vol)
+		// 槽位 6 到 17 为量比、成交额、股本、净资产、市值、动态市盈率、股息率等基本面指标。
 		item.VolumeRatio = floatAt(6)
 		item.Amount = floatAt(7)
 		item.TotalShares = floatAt(8)
@@ -319,6 +361,8 @@ func (obj *MACBoardMembersQuotes) ParseResponse(header *RespHeader, data []byte)
 		item.Unknown23 = floatAt(16)
 		item.Zero17 = item.Unknown23
 		item.DividendYield = floatAt(17)
+		// 槽位 27 为涨速；槽位 18 起为现量、换手、标签位图、价格精度、涨跌停价等盘口字段。
+		// 该分组沿用服务端固定槽位顺序，个别槽位的精确语义仍待确认。
 		item.SpeedPct = floatAt(27)
 		item.RiseSpeed = item.SpeedPct
 		item.LastVolume = uintAt(18)
@@ -341,6 +385,7 @@ func (obj *MACBoardMembersQuotes) ParseResponse(header *RespHeader, data []byte)
 		item.PreIPOV = floatAt(26)
 		item.Unknown27 = item.PreIPOV
 		item.RiseSpeed2 = item.SpeedPct
+		// 槽位 28 到 31 为板块标志、滚动市盈率、静态市盈率及末槽位，末槽位语义待确认。
 		item.KCBFlag = uintAt(28)
 		item.FlagKCB = item.KCBFlag
 		item.Zero29 = float64(item.KCBFlag)
@@ -356,6 +401,7 @@ func (obj *MACBoardMembersQuotes) ParseResponse(header *RespHeader, data []byte)
 	return nil
 }
 
+// Response 返回解码完成的成分股报价响应；未调用 ParseResponse 前内容为零值。
 func (obj *MACBoardMembersQuotes) Response() *MACBoardMembersQuotesReply {
 	return obj.reply
 }

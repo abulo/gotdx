@@ -1,3 +1,6 @@
+// Command ex_sampling 演示通过 ExChartSampling 获取分时缩略采样价格序列，以美股 `TSLA` 为例打印前 20 个采样点。
+//
+// 运行示例：`go run ./examples/ex_sampling`
 package main
 
 import (
@@ -16,6 +19,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
+	// 采样序列可能较长，仅打印前 20 个价格点及其序号。
 	for i, price := range prices[:min(20, len(prices))] {
 		log.Printf("sample=%d price=%.2f", i, price)
 	}

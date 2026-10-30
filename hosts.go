@@ -9,30 +9,37 @@ import (
 	"time"
 )
 
-// HostInfo describes a built-in TDX server entry.
+// HostInfo 表示一条内置通达信行情服务器条目，包含站点名称、IP 地址与端口。
+//
+// 该结构体零值可直接使用；各站点列表函数返回的是内置列表的副本，调用方修改返回切片
+// 不会影响内置数据。
 type HostInfo struct {
-	Name string `json:"name"`
-	IP   string `json:"ip"`
-	Port int    `json:"port"`
+	Name string `json:"name"` // 站点显示名称
+	IP   string `json:"ip"`   // 服务器 IP 地址
+	Port int    `json:"port"` // 服务器端口
 }
 
-// Address returns the host:port form used by the client connection layer.
+// Address 返回客户端连接层使用的 `host:port` 形式地址。
 func (h HostInfo) Address() string {
 	return net.JoinHostPort(h.IP, strconv.Itoa(h.Port))
 }
 
-// HostProbeResult records a single TCP probe result.
+// HostProbeResult 记录一次 TCP 拨号探测的结果。
+//
+// 当 `Reachable` 为 `true` 时 `Latency` 为本次拨号测得的往返耗时；当 `Reachable` 为 `false` 时
+// `Latency` 无意义，`Error` 保存拨号失败原因的文本描述。
 type HostProbeResult struct {
-	Name      string        `json:"name"`
-	IP        string        `json:"ip"`
-	Port      int           `json:"port"`
-	Address   string        `json:"address"`
-	Latency   time.Duration `json:"latency"`
-	Reachable bool          `json:"reachable"`
-	Error     string        `json:"error,omitempty"`
+	Name      string        `json:"name"`            // 站点显示名称，未知站点为空
+	IP        string        `json:"ip"`              // 服务器 IP 地址
+	Port      int           `json:"port"`            // 服务器端口
+	Address   string        `json:"address"`         // `host:port` 形式地址
+	Latency   time.Duration `json:"latency"`         // 拨号往返耗时，仅可达时有效
+	Reachable bool          `json:"reachable"`       // 是否拨号成功
+	Error     string        `json:"error,omitempty"` // 拨号失败原因，成功时为空
 }
 
-// ErrNoReachableHosts indicates that every probed host failed the TCP dial.
+// ErrNoReachableHosts 表示本次探测的所有主机 TCP 拨号均失败；
+// 由 FastestHost、FastestAddress 在没有任何可达节点时返回。
 var ErrNoReachableHosts = errors.New("no reachable hosts")
 
 var mainHostList = []HostInfo{
@@ -158,68 +165,68 @@ var icfqsHostList = []HostInfo{
 	{Name: "华为广州均衡5", IP: "124.71.105.217", Port: 7615},
 }
 
-// MainHosts returns the built-in main quote servers.
+// MainHosts 返回内置主行情服务器列表的副本。
 func MainHosts() []HostInfo {
 	return cloneHosts(mainHostList)
 }
 
-// BrokerHosts returns the built-in broker quote servers.
+// BrokerHosts 返回内置券商行情服务器列表的副本。
 func BrokerHosts() []HostInfo {
 	return cloneHosts(brokerHostList)
 }
 
-// ExHosts returns the built-in extended-market servers.
+// ExHosts 返回内置扩展行情服务器列表的副本。
 func ExHosts() []HostInfo {
 	return cloneHosts(exHostList)
 }
 
-// MACHosts returns the built-in MAC quote servers.
+// MACHosts 返回内置 MAC 主行情服务器列表的副本。
 func MACHosts() []HostInfo {
 	return cloneHosts(macHostList)
 }
 
-// MACExHosts returns the built-in MAC extended-market servers.
+// MACExHosts 返回内置 MAC 扩展行情服务器列表的副本。
 func MACExHosts() []HostInfo {
 	return cloneHosts(macExHostList)
 }
 
-// ICFQSHosts returns the built-in ICFQS TQLEX servers.
+// ICFQSHosts 返回内置 ICFQS 资讯行情服务器列表的副本。
 func ICFQSHosts() []HostInfo {
 	return cloneHosts(icfqsHostList)
 }
 
-// MainHostAddresses returns the built-in main quote host:port list.
+// MainHostAddresses 返回内置主行情服务器的 `host:port` 地址列表副本。
 func MainHostAddresses() []string {
 	return hostAddresses(mainHostList)
 }
 
-// BrokerHostAddresses returns the built-in broker host:port list.
+// BrokerHostAddresses 返回内置券商服务器的 `host:port` 地址列表副本。
 func BrokerHostAddresses() []string {
 	return hostAddresses(brokerHostList)
 }
 
-// ExHostAddresses returns the built-in extended-market host:port list.
+// ExHostAddresses 返回内置扩展行情服务器的 `host:port` 地址列表副本。
 func ExHostAddresses() []string {
 	return hostAddresses(exHostList)
 }
 
-// MACHostAddresses returns the built-in MAC quote host:port list.
+// MACHostAddresses 返回内置 MAC 主行情服务器的 `host:port` 地址列表副本。
 func MACHostAddresses() []string {
 	return hostAddresses(macHostList)
 }
 
-// MACExHostAddresses returns the built-in MAC extended-market host:port list.
+// MACExHostAddresses 返回内置 MAC 扩展行情服务器的 `host:port` 地址列表副本。
 func MACExHostAddresses() []string {
 	return hostAddresses(macExHostList)
 }
 
-// ICFQSHostAddresses returns the built-in ICFQS TQLEX host:port list.
+// ICFQSHostAddresses 返回内置 ICFQS 资讯行情服务器的 `host:port` 地址列表副本。
 func ICFQSHostAddresses() []string {
 	return hostAddresses(icfqsHostList)
 }
 
-// ProbeHosts concurrently dials the supplied built-in host entries and returns
-// the results sorted by reachability and latency.
+// ProbeHosts 并发对给定主机条目逐一发起 TCP 拨号探测，返回按可达性优先、
+// 同可达时按延迟从低到高排序的探测结果；`timeout` 为非正数时使用内置默认超时。
 func ProbeHosts(hosts []HostInfo, timeout time.Duration) []HostProbeResult {
 	results := probeAddressesWithDial(hostAddresses(hosts), timeout, net.DialTimeout)
 	names := make(map[string]HostInfo, len(hosts))
@@ -236,26 +243,30 @@ func ProbeHosts(hosts []HostInfo, timeout time.Duration) []HostProbeResult {
 	return results
 }
 
-// ProbeAddresses concurrently dials the supplied host:port list and returns the
-// results sorted by reachability and latency.
+// ProbeAddresses 并发对给定 `host:port` 地址列表逐一发起 TCP 拨号探测，
+// 返回按可达性优先、同可达时按延迟从低到高排序的探测结果；`timeout` 为非正数时使用内置默认超时。
 func ProbeAddresses(addresses []string, timeout time.Duration) []HostProbeResult {
 	return probeAddressesWithDial(addresses, timeout, net.DialTimeout)
 }
 
-// FastestHost returns the fastest reachable built-in host entry.
+// FastestHost 返回探测结果中延迟最低的可达主机条目；全部主机不可达时返回
+// 零值结果与 ErrNoReachableHosts。
 func FastestHost(hosts []HostInfo, timeout time.Duration) (HostProbeResult, error) {
 	return fastestProbeResult(ProbeHosts(hosts, timeout))
 }
 
-// FastestAddress returns the fastest reachable address from the supplied list.
+// FastestAddress 返回给定地址列表中延迟最低的可达地址；全部地址不可达时返回
+// 零值结果与 ErrNoReachableHosts。
 func FastestAddress(addresses []string, timeout time.Duration) (HostProbeResult, error) {
 	return fastestProbeResult(ProbeAddresses(addresses, timeout))
 }
 
+// cloneHosts 返回主机切片的浅拷贝，避免调用方改动内置列表。
 func cloneHosts(hosts []HostInfo) []HostInfo {
 	return append([]HostInfo(nil), hosts...)
 }
 
+// hostAddresses 将主机条目列表转换为 `host:port` 地址切片。
 func hostAddresses(hosts []HostInfo) []string {
 	addresses := make([]string, 0, len(hosts))
 	for _, host := range hosts {
@@ -264,6 +275,8 @@ func hostAddresses(hosts []HostInfo) []string {
 	return addresses
 }
 
+// defaultAddressAndPool 从地址列表中拆分出首个地址作为主地址、其余作为候选池；
+// 列表为空时使用兜底地址并返回空候选池。
 func defaultAddressAndPool(addresses []string, fallback string) (string, []string) {
 	if len(addresses) == 0 {
 		return fallback, nil
@@ -271,6 +284,8 @@ func defaultAddressAndPool(addresses []string, fallback string) (string, []strin
 	return addresses[0], append([]string(nil), addresses[1:]...)
 }
 
+// probeAddressesWithDial 并发拨号探测地址列表；`dial` 抽象拨号函数以便测试替换，
+// 结果先由互斥锁收集，探测结束后统一按可达性、延迟、名称、地址排序。
 func probeAddressesWithDial(addresses []string, timeout time.Duration, dial func(network, address string, timeout time.Duration) (net.Conn, error)) []HostProbeResult {
 	if timeout <= 0 {
 		timeout = time.Duration(_defaultTimeoutSec) * time.Second
@@ -322,6 +337,8 @@ func probeAddressesWithDial(addresses []string, timeout time.Duration, dial func
 	return results
 }
 
+// fastestProbeResult 在已排序的探测结果中取第一个可达条目；没有可达条目时返回
+// ErrNoReachableHosts。
 func fastestProbeResult(results []HostProbeResult) (HostProbeResult, error) {
 	for _, result := range results {
 		if result.Reachable {
@@ -331,6 +348,8 @@ func fastestProbeResult(results []HostProbeResult) (HostProbeResult, error) {
 	return HostProbeResult{}, ErrNoReachableHosts
 }
 
+// hostProbeFromAddress 预先从 `host:port` 地址解析出 IP 与端口；格式非法时把
+// 解析错误记录到结果的 `Error` 字段，拨号阶段不会重复报错。
 func hostProbeFromAddress(address string) HostProbeResult {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {

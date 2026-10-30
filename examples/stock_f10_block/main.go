@@ -1,3 +1,6 @@
+// Command stock_f10_block 演示查询证券 F10 资料打包结果，并加载概念板块清单打印前若干条板块成分。
+//
+// 运行示例：`go run ./examples/stock_f10_block`
 package main
 
 import (
@@ -11,12 +14,14 @@ func main() {
 	client := exampleutil.NewMainClient()
 	defer client.Disconnect()
 
+	// 查询深市 000001 的 F10 资料打包，汇总章节、除权除息与财务信息。
 	f10, err := client.StockF10(types.MarketSZ.Uint8(), "000001")
 	if err != nil {
 		log.Fatalln(err)
 	}
 	log.Printf("sections=%d xdxr=%d finance_nil=%v", len(f10.Sections), len(f10.XDXR), f10.Finance == nil)
 
+	// 加载概念板块文件，解析为板块成分条目列表。
 	blocks, err := client.StockBlock(types.BlockFileGN)
 	if err != nil {
 		log.Fatalln(err)
@@ -26,6 +31,7 @@ func main() {
 	if len(blocks) < limit {
 		limit = len(blocks)
 	}
+	// 板块数量可能不足 5 条，先截断再遍历，仅打印前 5 条。
 	for _, item := range blocks[:limit] {
 		log.Printf("block=%s type=%d code=%s", item.BlockName, item.BlockType, item.Code)
 	}

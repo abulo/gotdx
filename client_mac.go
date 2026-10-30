@@ -7,6 +7,8 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
+// 以下常量定义 MAC 协议各查询的默认获取条数与分页大小；`Count` 类常量为默认获取总数上限，
+// `Page` 类常量为默认单页条数。
 const (
 	DefaultMACBoardListCount            = 10000
 	DefaultMACBoardPageSize      uint16 = 150
@@ -27,21 +29,25 @@ const (
 
 const maxMACMarketMonitorStart = uint32(^uint16(0))
 
+// ConnectMAC 连接 MAC 行情主站；已建立连接时直接复用现有连接，加锁避免并发重复拨号。
 func (client *Client) ConnectMAC() error {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
+	// 幂等：已有连接直接复用。
 	if client.conn != nil {
 		return nil
 	}
 	return client.connect()
 }
 
+// GetMACBoardCount 查询指定类型板块的总数（底层协议接口）。
 func (client *Client) GetMACBoardCount(boardType uint16) (*proto.MACBoardCountReply, error) {
 	obj := proto.NewMACBoardCount(&proto.MACBoardListRequest{BoardType: boardType})
 	return client.execute(obj)
 }
 
+// GetMACBoardList 分页查询指定类型的板块列表（底层协议接口）。
 func (client *Client) GetMACBoardList(boardType uint16, start uint16, pageSize uint16) (*proto.MACBoardListReply, error) {
 	obj := proto.NewMACBoardList(&proto.MACBoardListRequest{
 		BoardType: boardType,
@@ -51,6 +57,7 @@ func (client *Client) GetMACBoardList(boardType uint16, start uint16, pageSize u
 	return client.execute(obj)
 }
 
+// GetMACBoardMembers 分页查询指定板块的成分股列表（底层协议接口）。
 func (client *Client) GetMACBoardMembers(boardSymbol string, sortType uint16, start uint32, pageSize uint8, sortOrder uint16) (*proto.MACBoardMembersReply, error) {
 	boardCode, err := protoExchangeBoardCode(boardSymbol)
 	if err != nil {
@@ -66,6 +73,7 @@ func (client *Client) GetMACBoardMembers(boardSymbol string, sortType uint16, st
 	return client.execute(obj)
 }
 
+// GetMACBoardMembersQuotes 分页查询指定板块成分股的行情报价（底层协议接口）。
 func (client *Client) GetMACBoardMembersQuotes(boardSymbol string, sortType uint16, start uint32, pageSize uint8, sortOrder uint8) (*proto.MACBoardMembersQuotesReply, error) {
 	boardCode, err := protoExchangeBoardCode(boardSymbol)
 	if err != nil {
@@ -244,6 +252,7 @@ func (client *Client) GetMACMarketMonitor(market uint8, start uint16, count uint
 	return client.execute(obj)
 }
 
+// GetMACSymbolBelongBoard 查询指定证券所属的板块列表（底层协议接口）。
 func (client *Client) GetMACSymbolBelongBoard(market uint8, symbol string) (*proto.MACSymbolBelongBoardReply, error) {
 	obj := proto.NewMACSymbolBelongBoard(&proto.MACSymbolBelongBoardRequest{
 		Market: uint16(market),
@@ -252,6 +261,7 @@ func (client *Client) GetMACSymbolBelongBoard(market uint8, symbol string) (*pro
 	return client.execute(obj)
 }
 
+// GetMACSymbolBars 查询 MAC 证券 K 线数据（底层协议接口）。
 func (client *Client) GetMACSymbolBars(market uint8, code string, period uint16, times uint16, start uint32, count uint16, adjust uint16) (*proto.MACSymbolBarsReply, error) {
 	obj := proto.NewMACSymbolBars(&proto.MACSymbolBarsRequest{
 		Market: uint16(market),
@@ -265,6 +275,7 @@ func (client *Client) GetMACSymbolBars(market uint8, code string, period uint16,
 	return client.execute(obj)
 }
 
+// MACBoardCount 连接 MAC 主站并返回指定类型板块的总数。
 func (client *Client) MACBoardCount(boardType uint16) (uint16, error) {
 	if err := client.ConnectMAC(); err != nil {
 		return 0, err
@@ -276,6 +287,7 @@ func (client *Client) MACBoardCount(boardType uint16) (uint16, error) {
 	return reply.Total, nil
 }
 
+// MACBoardList 连接 MAC 主站并自动分页拉取板块列表；参数 `count` 为 0 时使用默认上限。
 func (client *Client) MACBoardList(boardType uint16, count uint32) ([]proto.MACBoardListItem, error) {
 	if count == 0 {
 		count = DefaultMACBoardListCount
@@ -288,6 +300,7 @@ func (client *Client) MACBoardList(boardType uint16, count uint32) ([]proto.MACB
 	for start := uint32(0); start < count; start += uint32(DefaultMACBoardPageSize) {
 		pageSize := DefaultMACBoardPageSize
 		remaining := count - start
+		// 最后一页不足默认大小时把本页大小收缩到剩余条数，避免超取。
 		if remaining < uint32(pageSize) {
 			pageSize = uint16(remaining)
 		}
@@ -295,6 +308,7 @@ func (client *Client) MACBoardList(boardType uint16, count uint32) ([]proto.MACB
 		if err != nil {
 			return nil, err
 		}
+		// 空页或不足一页均视为已到末尾，停止翻页。
 		if len(reply.List) == 0 {
 			break
 		}
@@ -306,6 +320,7 @@ func (client *Client) MACBoardList(boardType uint16, count uint32) ([]proto.MACB
 	return result, nil
 }
 
+// MACBoardMembers 连接 MAC 主站并自动分页拉取板块成分股（使用默认排序）。
 func (client *Client) MACBoardMembers(boardSymbol string, count uint32) ([]proto.MACBoardMemberItem, error) {
 	return client.MACBoardMembersWithSort(boardSymbol, count, defaultMACBoardSortType, defaultMACBoardSortOrder)
 }
@@ -341,6 +356,7 @@ func (client *Client) MACBoardMembersWithSort(boardSymbol string, count uint32, 
 	return result, nil
 }
 
+// MACBoardMembersQuotes 连接 MAC 主站并自动分页拉取板块成分股行情报价（使用默认排序）。
 func (client *Client) MACBoardMembersQuotes(boardSymbol string, count uint32) ([]proto.MACBoardMemberQuoteItem, error) {
 	return client.MACBoardMembersQuotesWithSort(boardSymbol, count, defaultMACBoardSortType, uint8(defaultMACBoardSortOrder))
 }
@@ -359,6 +375,7 @@ func (client *Client) MACBoardMembersQuotesDynamicWithFilter(boardSymbol string,
 		return nil, err
 	}
 
+	// 跨页合并动态报价；各页必须使用同一份字段位图，否则字段含义会错位。
 	var merged *proto.MACBoardMembersQuotesDynamicReply
 	for start := uint32(0); start < count; start += uint32(DefaultMACBoardStockPage) {
 		pageSize := DefaultMACBoardStockPage
@@ -374,11 +391,13 @@ func (client *Client) MACBoardMembersQuotesDynamicWithFilter(boardSymbol string,
 			break
 		}
 		if merged == nil {
+			// 首页深拷贝应答，`Stocks` 单独分配切片，避免共享底层数组。
 			copyReply := *reply
 			copyReply.Stocks = append([]proto.MACBoardMemberQuoteDynamicItem(nil), reply.Stocks...)
 			copyReply.Count = uint16(len(copyReply.Stocks))
 			merged = &copyReply
 		} else {
+			// 位图跨页不一致属于协议异常，直接返回错误防止按错误字段解析。
 			if merged.FieldBitmap != reply.FieldBitmap {
 				return nil, fmt.Errorf("mac dynamic field bitmap changed across pages: %x != %x", merged.FieldBitmap, reply.FieldBitmap)
 			}
@@ -392,6 +411,7 @@ func (client *Client) MACBoardMembersQuotesDynamicWithFilter(boardSymbol string,
 			break
 		}
 	}
+	// 一页都没取到时构造空应答；空位图回退到默认字段位图，保证 ActiveFields 可渲染。
 	if merged == nil {
 		merged = &proto.MACBoardMembersQuotesDynamicReply{
 			FieldBitmap: fieldBitmap,
@@ -435,6 +455,7 @@ func (client *Client) MACBoardMembersQuotesWithSort(boardSymbol string, count ui
 	return result, nil
 }
 
+// MACSymbolBelongBoard 连接 MAC 主站并查询指定证券所属的板块列表。
 func (client *Client) MACSymbolBelongBoard(symbol string, market uint8) ([]proto.MACBelongBoardItem, error) {
 	if err := client.ConnectMAC(); err != nil {
 		return nil, err
@@ -480,14 +501,16 @@ func (client *Client) MACFileList(filename string, offset uint32) (*proto.MACFil
 	return client.GetMACFileList(filename, offset)
 }
 
-// MACDownloadFullFile 下载完整 MAC 文件。
+// MACDownloadFullFile 按固定块大小循环下载完整 MAC 文件，直到服务器返回空块或达到目标总大小。
 func (client *Client) MACDownloadFullFile(filename string, index uint32, size uint32) ([]byte, error) {
 	if err := client.ConnectMAC(); err != nil {
 		return nil, err
 	}
+	// 协议文件序号从 1 开始，0 归一化为 1。
 	if index == 0 {
 		index = 1
 	}
+	// 未指定总大小时先取文件元信息中的大小作为下载上限。
 	if size == 0 {
 		meta, err := client.GetMACFileList(filename, 0)
 		if err == nil {
@@ -502,11 +525,13 @@ func (client *Client) MACDownloadFullFile(filename string, index uint32, size ui
 		if err != nil {
 			return nil, err
 		}
+		// 服务器返回空块表示文件已下载完。
 		if reply.Size == 0 {
 			break
 		}
 		result = append(result, reply.Data...)
 		downloaded += reply.Size
+		// 已达到目标总大小即停止；`size` 为 0 时仅靠空块结束循环。
 		if size != 0 && downloaded >= size {
 			break
 		}
@@ -553,6 +578,7 @@ func (client *Client) MACTransactionsWithDate(market uint8, code string, start u
 	result := make([]proto.MACTransactionItem, 0)
 	currentStart := start
 	remaining := count
+	// 按剩余条数翻页：最后一页收缩大小，空页或不足一页提前结束。
 	for remaining > 0 {
 		pageSize := DefaultMACTransactionsPage
 		if remaining < uint32(pageSize) {
@@ -587,6 +613,7 @@ func (client *Client) MACAuction(market uint8, code string, start uint32, count 
 	result := make([]proto.MACAuctionItem, 0)
 	currentStart := start
 	remaining := count
+	// 按剩余条数翻页拉取竞价数据，空页或不足一页结束。
 	for remaining > 0 {
 		pageSize := DefaultMACAuctionPage
 		if remaining < pageSize {
@@ -630,6 +657,7 @@ func (client *Client) MACMarketMonitor(market uint8, start uint32, count uint32)
 	if count == 0 {
 		count = DefaultMACMarketMonitorCount
 	}
+	// 协议偏移为 `uint16`，入参超限在翻页前先拦截。
 	if start > maxMACMarketMonitorStart {
 		return nil, fmt.Errorf("mac market monitor start exceeds uint16: %d", start)
 	}
@@ -641,6 +669,7 @@ func (client *Client) MACMarketMonitor(market uint8, start uint32, count uint32)
 	currentStart := start
 	remaining := count
 	for remaining > 0 {
+		// 翻页过程中再次校验偏移，防止累加后越出 `uint16` 范围。
 		if currentStart > maxMACMarketMonitorStart {
 			return nil, fmt.Errorf("mac market monitor start exceeds uint16: %d", currentStart)
 		}
@@ -665,6 +694,7 @@ func (client *Client) MACMarketMonitor(market uint8, start uint32, count uint32)
 	return result, nil
 }
 
+// MACSymbolBars 连接 MAC 主站、自动分页拉取证券 K 线，并补齐换手率、转换期货自然时间。
 func (client *Client) MACSymbolBars(market uint8, code string, period uint16, times uint16, start uint32, count uint32, adjust uint16) ([]proto.MACSymbolBar, error) {
 	if err := client.ConnectMAC(); err != nil {
 		return nil, err
@@ -692,6 +722,7 @@ func (client *Client) MACSymbolBars(market uint8, code string, period uint16, ti
 		currentStart += uint32(pageSize)
 		remaining -= uint32(pageSize)
 	}
+	// 分页合并后统一回填换手率，并把期货 K 线时间换算为自然时间。
 	applyMACSymbolBarTurnover(result)
 	if err := resolveMACFuturesDateTimes(result, code, client.opt.FuturesCalendarPath); err != nil {
 		return nil, err
@@ -699,6 +730,7 @@ func (client *Client) MACSymbolBars(market uint8, code string, period uint16, ti
 	return result, nil
 }
 
+// applyMACSymbolBarTurnover 按流通股本回填 MAC K 线换手率；股本或成交量非正时跳过。
 func applyMACSymbolBarTurnover(items []proto.MACSymbolBar) {
 	for i := range items {
 		if items[i].FloatShares <= 0 || items[i].Vol <= 0 {
@@ -708,18 +740,21 @@ func applyMACSymbolBarTurnover(items []proto.MACSymbolBar) {
 	}
 }
 
+// makeMACCode8Client 把代码填充为协议定长 8 字节字段，短代码补零、长代码截断。
 func makeMACCode8Client(code string) [8]byte {
 	var out [8]byte
 	copy(out[:], code)
 	return out
 }
 
+// makeMACCode22Client 把代码填充为协议定长 22 字节字段，短代码补零、长代码截断。
 func makeMACCode22Client(code string) [22]byte {
 	var out [22]byte
 	copy(out[:], code)
 	return out
 }
 
+// makeMACFilename70 把文件名填充为协议定长 70 字节字段，短名称补零、长名称截断。
 func makeMACFilename70(filename string) [70]byte {
 	var out [70]byte
 	copy(out[:], filename)

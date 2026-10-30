@@ -7,8 +7,10 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
+// macIntegrationHistoryDate 是集成测试固定使用的历史日期，保证历史行情与成交记录可稳定复现。
 const macIntegrationHistoryDate = 20260430
 
+// newMACIntegrationClient 基于内置 MAC 站点地址池构造客户端，超时设为 6 秒；仅用于集成测试。
 func newMACIntegrationClient() *Client {
 	primary, pool := defaultAddressAndPool(MACHostAddresses(), "")
 	return NewMAC(

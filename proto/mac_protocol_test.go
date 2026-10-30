@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// assertNearFloat64 断言两个浮点值之差不超过容差 0.001，超差则终止测试。
 func assertNearFloat64(t *testing.T, got float64, want float64, label string) {
 	t.Helper()
 	if math.Abs(got-want) > 0.001 {
@@ -15,6 +16,7 @@ func assertNearFloat64(t *testing.T, got float64, want float64, label string) {
 	}
 }
 
+// writeMACFloat32 将单精度浮点按小端序写入 `MAC` 报文缓冲区。
 func writeMACFloat32(t *testing.T, buf *bytes.Buffer, value float32) {
 	t.Helper()
 	if err := binary.Write(buf, binary.LittleEndian, math.Float32bits(value)); err != nil {
@@ -314,54 +316,54 @@ func TestMACBoardMembersQuotesBuildRequestAndParseResponse(t *testing.T) {
 	copy(itemName, "BANK")
 	buf.Write(itemName)
 	buf.Write(make([]byte, 20))
-	writeMACFloat32(t, buf, 1) // pre_close
-	writeMACFloat32(t, buf, 2) // open
-	writeMACFloat32(t, buf, 3) // high
-	writeMACFloat32(t, buf, 4) // low
-	writeMACFloat32(t, buf, 5) // close
+	writeMACFloat32(t, buf, 1) // 昨收
+	writeMACFloat32(t, buf, 2) // 开盘
+	writeMACFloat32(t, buf, 3) // 最高
+	writeMACFloat32(t, buf, 4) // 最低
+	writeMACFloat32(t, buf, 5) // 收盘
 	if err := binary.Write(buf, binary.LittleEndian, uint32(600)); err != nil {
 		t.Fatal(err)
 	}
-	writeMACFloat32(t, buf, 7)  // vol_ratio
-	writeMACFloat32(t, buf, 8)  // amount
-	writeMACFloat32(t, buf, 9)  // total_shares
-	writeMACFloat32(t, buf, 10) // float_shares
-	writeMACFloat32(t, buf, 11) // eps
-	writeMACFloat32(t, buf, 12) // net_assets
-	writeMACFloat32(t, buf, 13) // action_price
-	writeMACFloat32(t, buf, 14) // market_cap_ab
-	writeMACFloat32(t, buf, 15) // pe_dynamic
+	writeMACFloat32(t, buf, 7)  // 量比
+	writeMACFloat32(t, buf, 8)  // 成交额
+	writeMACFloat32(t, buf, 9)  // 总股数
+	writeMACFloat32(t, buf, 10) // 流通股
+	writeMACFloat32(t, buf, 11) // 每股收益
+	writeMACFloat32(t, buf, 12) // 净资产
+	writeMACFloat32(t, buf, 13) // 证券类型价
+	writeMACFloat32(t, buf, 14) // AB股总市值
+	writeMACFloat32(t, buf, 15) // 市盈率(动)
 	if err := binary.Write(buf, binary.LittleEndian, uint32(1600)); err != nil {
 		t.Fatal(err)
 	}
-	writeMACFloat32(t, buf, 17) // unknown_23
-	writeMACFloat32(t, buf, 18) // dividend_yield
+	writeMACFloat32(t, buf, 17) // 未知字段（语义待确认）
+	writeMACFloat32(t, buf, 18) // 每股股息
 	if err := binary.Write(buf, binary.LittleEndian, uint32(321)); err != nil {
 		t.Fatal(err)
 	}
-	writeMACFloat32(t, buf, 20) // turnover
+	writeMACFloat32(t, buf, 20) // 换手率
 	if err := binary.Write(buf, binary.LittleEndian, uint32(21)); err != nil {
 		t.Fatal(err)
 	}
 	if err := binary.Write(buf, binary.LittleEndian, uint32(22)); err != nil {
 		t.Fatal(err)
 	}
-	writeMACFloat32(t, buf, 23) // buy_price_limit
-	writeMACFloat32(t, buf, 24) // sell_price_limit
+	writeMACFloat32(t, buf, 23) // 涨停价
+	writeMACFloat32(t, buf, 24) // 跌停价
 	if err := binary.Write(buf, binary.LittleEndian, uint32(25)); err != nil {
 		t.Fatal(err)
 	}
 	if err := binary.Write(buf, binary.LittleEndian, uint32(26)); err != nil {
 		t.Fatal(err)
 	}
-	writeMACFloat32(t, buf, 27) // pre_ipov
-	writeMACFloat32(t, buf, 28) // speed_pct
+	writeMACFloat32(t, buf, 27) // 昨`IOPV`
+	writeMACFloat32(t, buf, 28) // 涨速
 	if err := binary.Write(buf, binary.LittleEndian, uint32(29)); err != nil {
 		t.Fatal(err)
 	}
-	writeMACFloat32(t, buf, 30) // pe_ttm
-	writeMACFloat32(t, buf, 31) // pe_static
-	writeMACFloat32(t, buf, 32) // unknown_close_price
+	writeMACFloat32(t, buf, 30) // 市盈率`TTM`
+	writeMACFloat32(t, buf, 31) // 市盈率静
+	writeMACFloat32(t, buf, 32) // 未知末槽位（语义待确认）
 
 	if err := msg.ParseResponse(&RespHeader{}, buf.Bytes()); err != nil {
 		t.Fatalf("parse response failed: %v", err)
@@ -393,7 +395,7 @@ func TestMACBoardMembersQuotesDynamicBuildRequestAndParseResponse(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	bitmap := [20]byte{0x31} // bits: 0=pre_close 4=close 5=vol
+	bitmap := [20]byte{0x31} // 位图：第 0 位昨收、第 4 位收盘、第 5 位成交量
 	msg := NewMACBoardMembersQuotesDynamic(&MACBoardMembersQuotesDynamicRequest{
 		BoardCode:   boardCode,
 		SortType:    14,
@@ -494,7 +496,7 @@ func TestMACBoardMembersQuotesDynamicSupportsSignedAndAliasFields(t *testing.T) 
 	name := make([]byte, 44)
 	copy(name, "PINGAN")
 	buf.Write(name)
-	writeMACFloat32(t, buf, 12.3) // pre_iopv
+	writeMACFloat32(t, buf, 12.3) // 昨`IOPV`
 	if err := binary.Write(buf, binary.LittleEndian, int32(-7)); err != nil {
 		t.Fatal(err)
 	}
@@ -564,6 +566,7 @@ func TestMACDynamicFieldMapAlignsLatestTDX(t *testing.T) {
 	}
 }
 
+// containsString 判断字符串切片中是否包含目标字符串。
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -1652,7 +1655,7 @@ func TestMACSymbolBarsBuildRequestAndParseResponse(t *testing.T) {
 	}
 }
 
-// TestCombineMACDateTimeOvernight 验证协议层保留 MAC 原始交易日与时刻，不擅自推断自然日。
+// TestCombineMACDateTimeOvernight 验证协议层保留 `MAC` 原始交易日与时刻，不擅自推断自然日。
 func TestCombineMACDateTimeOvernight(t *testing.T) {
 	got := combineMACDateTime(20260331, 60).Format("2006-01-02 15:04:05")
 	if got != "2026-03-31 00:01:00" {

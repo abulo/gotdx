@@ -1,3 +1,6 @@
+// Command mac_capital_flow 演示通过 MACCapitalFlow 查询个股资金流向，以深市 `000001` 为例打印今日与五日主力、散户净流入。
+//
+// 运行示例：`go run ./examples/mac_capital_flow`
 package main
 
 import (

@@ -11,20 +11,20 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
-// fakeRespHeader 构造 16 字节响应头，字段顺序与 proto.RespHeader 一致。
+// fakeRespHeader 按 `proto.RespHeader` 的字段顺序构造 16 字节响应头，供本地模拟服务器回包使用。
 func fakeRespHeader(seq uint32, method uint16, size uint16) []byte {
 	b := make([]byte, proto.MessageHeaderBytes)
-	binary.LittleEndian.PutUint32(b[0:4], 0) // I1
-	b[4] = 0                                 // I2
+	binary.LittleEndian.PutUint32(b[0:4], 0) // 保留标识字节（对应 `I1`）
+	b[4] = 0                                 // 保留标识字节（对应 `I2`）
 	binary.LittleEndian.PutUint32(b[5:9], seq)
-	b[9] = 0 // I3
+	b[9] = 0 // 保留标识字节（对应 `I3`）
 	binary.LittleEndian.PutUint16(b[10:12], method)
 	binary.LittleEndian.PutUint16(b[12:14], size)
 	binary.LittleEndian.PutUint16(b[14:16], size)
 	return b
 }
 
-// fakeHello1Body 构造 >=189 字节的 Hello1 握手正文。
+// fakeHello1Body 构造不少于 189 字节的 `Hello1` 握手正文。
 func fakeHello1Body() []byte {
 	body := make([]byte, 189)
 	binary.LittleEndian.PutUint16(body[1:3], 2026)
@@ -36,8 +36,8 @@ func fakeHello1Body() []byte {
 	return body
 }
 
-// fakeTDXServer 模拟 TDX 主站：握手正常；对 KMSG_HISTORYMINUTETIMEDATE 第一次回超长响应，之后正常。
-// 返回监听地址，退出时关闭。
+// fakeTDXServer 模拟通达信主站：握手正常；对 `KMSG_HISTORYMINUTETIMEDATE` 命令第一次回超长响应，
+// 之后按正常报文应答。返回本地监听地址，第二个返回值为关闭监听的回调函数。
 func fakeTDXServer(t *testing.T, oversizedSize uint16) (addr string, stop func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -82,7 +82,7 @@ func fakeTDXServer(t *testing.T, oversizedSize uint16) (addr string, stop func()
 							}
 							conn.Write(append(fakeRespHeader(seq, method, oversizedSize), body...))
 						} else {
-							// 正常响应：10 字节头（Count + 2 个未知 uint32）。
+							// 正常响应：10 字节负载（2 字节返回条数加 2 个语义待确认的 `uint32` 字段）。
 							conn.Write(append(fakeRespHeader(seq, method, 10), make([]byte, 10)...))
 						}
 					default:
@@ -96,7 +96,7 @@ func fakeTDXServer(t *testing.T, oversizedSize uint16) (addr string, stop func()
 	return ln.Addr().String(), func() { _ = ln.Close() }
 }
 
-// 验证超长响应返回 ErrBadData 后连接被丢弃，避免残留字节污染后续请求。
+// 验证超长响应返回 `ErrBadData` 后连接被丢弃，避免残留字节污染后续请求。
 func TestExchangeBadDataDiscardsConn(t *testing.T) {
 	addr, stop := fakeTDXServer(t, 59202)
 	defer stop()

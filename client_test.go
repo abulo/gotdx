@@ -9,6 +9,7 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
+// newClient 连接内置测试地址并返回客户端；连接失败时仅打印错误，由后续断言暴露问题。
 func newClient() *Client {
 	tdx := New(WithTCPAddress("124.71.187.122:7709"))
 	reply, err := tdx.Connect()
@@ -19,6 +20,7 @@ func newClient() *Client {
 	return tdx
 }
 
+// requireIntegration 仅在设置环境变量 `GOTDX_INTEGRATION=1` 时继续执行集成测试，否则跳过。
 func requireIntegration(t *testing.T) {
 	t.Helper()
 	if os.Getenv("GOTDX_INTEGRATION") != "1" {
