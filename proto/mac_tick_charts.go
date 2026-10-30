@@ -67,6 +67,7 @@ type MACTickChartItem struct {
 	Price   float64
 	Avg     float64
 	Vol     uint16
+	Amount  float64
 	Unknown uint16
 }
 
@@ -141,15 +142,17 @@ func (obj *MACTickCharts) ParseResponse(header *RespHeader, data []byte) error {
 			return fmt.Errorf("invalid mac tick charts item %d", tickIndex)
 		}
 		minutes := binary.LittleEndian.Uint16(data[pos : pos+2])
+		MACTickChartItemInfo := MACTickChartItem{
+			Time:    time.Date(0, 1, 1, int(minutes/60)%24, int(minutes%60), 0, 0, time.Local).Add(time.Minute).Format("15:04:05"),
+			Price:   float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+2 : pos+6]))),
+			Avg:     float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+6 : pos+10]))),
+			Vol:     binary.LittleEndian.Uint16(data[pos+10 : pos+12]),
+			Unknown: binary.LittleEndian.Uint16(data[pos+12 : pos+14]),
+		}
+		MACTickChartItemInfo.Amount = float64(MACTickChartItemInfo.Vol) * MACTickChartItemInfo.Avg * 100
 		ticks = append(ticks, tickWithMinute{
 			minute: minutes,
-			item: MACTickChartItem{
-				Time:    time.Date(0, 1, 1, int(minutes/60)%24, int(minutes%60), 0, 0, time.Local).Format("15:04:05"),
-				Price:   float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+2 : pos+6]))),
-				Avg:     float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+6 : pos+10]))),
-				Vol:     binary.LittleEndian.Uint16(data[pos+10 : pos+12]),
-				Unknown: binary.LittleEndian.Uint16(data[pos+12 : pos+14]),
-			},
+			item:   MACTickChartItemInfo,
 		})
 		pos += 14
 	}
