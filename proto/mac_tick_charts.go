@@ -115,6 +115,8 @@ func (obj *MACTickCharts) BuildRequest() ([]byte, error) {
 }
 
 // ParseResponse 解码服务端返回的字节流并按交易日分组填充响应；报文长度不足或记录区不完整时返回错误。
+// 分组完成后按请求天数裁剪：服务端返回的交易日数多于请求天数时，仅保留最近 days 个交易日，
+// 并同步修正交易日计数，保证 `Charts` 长度与 `Count` 一致。
 func (obj *MACTickCharts) ParseResponse(header *RespHeader, data []byte) error {
 	obj.respHeader = header
 	if len(data) < 71 {
@@ -192,6 +194,13 @@ func (obj *MACTickCharts) ParseResponse(header *RespHeader, data []byte) error {
 		for len(obj.reply.Charts) < int(obj.reply.Count) {
 			obj.reply.Charts = append(obj.reply.Charts, newMACTickChartDay(dates, preCloses, len(obj.reply.Charts)))
 		}
+	}
+
+	// 服务端返回的交易日数可能多于请求天数（如请求 1 天时服务端附送前一交易日作基准日），
+	// 按请求天数裁剪，仅保留最近 days 个交易日，并同步修正交易日计数，保证 len(Charts) 与 Count 一致。
+	if n := int(obj.request.Days); len(obj.reply.Charts) > n {
+		obj.reply.Charts = obj.reply.Charts[:n]
+		obj.reply.Count = uint16(n)
 	}
 
 	// 汇总行情段不足 120 字节时直接返回，跳过尾部字段解析。

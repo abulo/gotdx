@@ -1145,6 +1145,79 @@ func TestMACTickChartsBuildRequestAndParseResponse(t *testing.T) {
 	assertNearFloat64(t, reply.Close, 10.2, "tick_close")
 }
 
+func TestMACTickChartsParseResponseTrimsDaysBeyondRequest(t *testing.T) {
+	// 请求 1 个交易日，服务端返回 2 个交易日（当日 + 前一基准日）时应裁剪为 1 天。
+	msg := NewMACTickCharts(&MACTickChartsRequest{
+		Market: 1,
+		Code:   makeMACCode22("600000"),
+		Days:   1,
+	})
+
+	buf := new(bytes.Buffer)
+	if err := binary.Write(buf, binary.LittleEndian, uint16(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(buf, binary.LittleEndian, makeMACCode22("600000")); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []uint32{20260418, 20260417, 0, 0, 0} {
+		if err := binary.Write(buf, binary.LittleEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, value := range []float32{10.0, 9.8, 0, 0, 0} {
+		writeMACFloat32(t, buf, value)
+	}
+	// 服务端交易日数 Count=2，与请求 days=1 不一致。
+	if err := binary.Write(buf, binary.LittleEndian, uint16(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := buf.WriteByte(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(buf, binary.LittleEndian, uint16(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(buf, binary.LittleEndian, uint16(4)); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		minutes uint16
+		price   float32
+		avg     float32
+		vol     uint16
+		unknown uint16
+	}{
+		{minutes: 570, price: 10.1, avg: 10.05, vol: 100, unknown: 7},
+		{minutes: 571, price: 10.2, avg: 10.10, vol: 120, unknown: 8},
+		{minutes: 570, price: 9.9, avg: 9.85, vol: 90, unknown: 9},
+		{minutes: 571, price: 10.0, avg: 9.90, vol: 110, unknown: 10},
+	} {
+		if err := binary.Write(buf, binary.LittleEndian, item.minutes); err != nil {
+			t.Fatal(err)
+		}
+		writeMACFloat32(t, buf, item.price)
+		writeMACFloat32(t, buf, item.avg)
+		if err := binary.Write(buf, binary.LittleEndian, item.vol); err != nil {
+			t.Fatal(err)
+		}
+		if err := binary.Write(buf, binary.LittleEndian, item.unknown); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := msg.ParseResponse(&RespHeader{}, buf.Bytes()); err != nil {
+		t.Fatalf("parse response failed: %v", err)
+	}
+	reply := msg.Response()
+	if reply.Count != 1 || len(reply.Charts) != 1 {
+		t.Fatalf("expected trimmed to 1 day, got count=%d charts=%d", reply.Count, len(reply.Charts))
+	}
+	if reply.Charts[0].Date != "2026-04-18" || len(reply.Charts[0].Ticks) != 2 {
+		t.Fatalf("unexpected trimmed charts: %+v", reply.Charts)
+	}
+}
+
 func TestMACTickChartsParseResponseSupportsPartialLeadingDay(t *testing.T) {
 	msg := NewMACTickCharts(nil)
 
