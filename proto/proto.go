@@ -6,6 +6,8 @@ import (
 	"math"
 	"sync/atomic"
 	"time"
+
+	"github.com/bensema/gotdx/types"
 )
 
 // MessageHeaderBytes 与 MessageMaxBytes 约定协议报文的头部长度与单条报文大小上限。
@@ -106,23 +108,6 @@ const (
 	KMSG_CLIENT26AE             = 0x26ae // 客户端信息 26AE
 	KMSG_CLIENT26B1             = 0x26b1 // 客户端信息 26B1
 
-)
-
-// KLINE_TYPE_* 是 K 线与分时数据的周期类别编号，查询数据时作为周期类别参数传入。
-// 该编号同时决定响应时间戳的解码方式：分钟级周期使用位压缩编码，日及以上周期使用十进制日期打包编码。
-const (
-	KLINE_TYPE_5MIN      = 0  // 五分钟 K 线
-	KLINE_TYPE_15MIN     = 1  // 十五分钟 K 线
-	KLINE_TYPE_30MIN     = 2  // 三十分钟 K 线
-	KLINE_TYPE_1HOUR     = 3  // 一小时 K 线
-	KLINE_TYPE_DAILY     = 4  // 日 K 线
-	KLINE_TYPE_WEEKLY    = 5  // 周 K 线
-	KLINE_TYPE_MONTHLY   = 6  // 月 K 线
-	KLINE_TYPE_EXHQ_1MIN = 7  // 一分钟
-	KLINE_TYPE_1MIN      = 8  // 一分钟 K 线
-	KLINE_TYPE_RI_K      = 9  // 日 K 线
-	KLINE_TYPE_3MONTH    = 10 // 季 K 线
-	KLINE_TYPE_YEARLY    = 11 // 年 K 线
 )
 
 // RequestBuilder 负责把一次协议调用的参数编码为线上请求字节流。
@@ -403,29 +388,29 @@ func getdatetime(category int, b []byte, pos *int) (year int, month int, day int
 func getdatetimenow(category int, lasttime string) (year int, month int, day int, hour int, minute int) {
 	utime, _ := time.Parse("2006-01-02 15:04:05", lasttime)
 	switch category {
-	case KLINE_TYPE_5MIN:
+	case types.KLINE_TYPE_5MIN:
 		utime = utime.Add(time.Minute * 5)
-	case KLINE_TYPE_15MIN:
+	case types.KLINE_TYPE_15MIN:
 		utime = utime.Add(time.Minute * 15)
-	case KLINE_TYPE_30MIN:
+	case types.KLINE_TYPE_30MIN:
 		utime = utime.Add(time.Minute * 30)
-	case KLINE_TYPE_1HOUR:
+	case types.KLINE_TYPE_1HOUR:
 		utime = utime.Add(time.Hour)
-	case KLINE_TYPE_DAILY:
+	case types.KLINE_TYPE_DAILY:
 		utime = utime.AddDate(0, 0, 1)
-	case KLINE_TYPE_WEEKLY:
+	case types.KLINE_TYPE_WEEKLY:
 		utime = utime.Add(time.Hour * 24 * 7)
-	case KLINE_TYPE_MONTHLY:
+	case types.KLINE_TYPE_MONTHLY:
 		utime = utime.AddDate(0, 1, 0)
-	case KLINE_TYPE_EXHQ_1MIN:
+	case types.KLINE_TYPE_EXHQ_1MIN:
 		utime = utime.Add(time.Minute)
-	case KLINE_TYPE_1MIN:
+	case types.KLINE_TYPE_1MIN:
 		utime = utime.Add(time.Minute)
-	case KLINE_TYPE_RI_K:
+	case types.KLINE_TYPE_RI_K:
 		utime = utime.AddDate(0, 0, 1)
-	case KLINE_TYPE_3MONTH:
+	case types.KLINE_TYPE_3MONTH:
 		utime = utime.AddDate(0, 3, 0)
-	case KLINE_TYPE_YEARLY:
+	case types.KLINE_TYPE_YEARLY:
 		utime = utime.AddDate(1, 0, 0)
 	}
 

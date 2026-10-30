@@ -23,7 +23,7 @@ type GetSecurityBars struct {
 type GetSecurityBarsRequest struct {
 	Market   uint16  // 市场代码。
 	Code     [6]byte // 证券代码。
-	Category uint16  // K 线周期类别，取值为 KLINE_TYPE_* 常量。
+	Category uint16  // K 线周期类别，取值为 types.KLINE_TYPE_* 常量。
 	Times    uint16  // 周期倍数，如周线以天数倍数表达。
 	Start    uint16  // 起始偏移条数。
 	Count    uint16  // 请求条数。

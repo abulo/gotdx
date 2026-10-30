@@ -6,6 +6,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/bensema/gotdx/types"
 )
 
 // readExReqHeader 读取扩展协议请求报文前 10 字节的扩展头部，解码失败立即终止测试。
@@ -399,7 +401,7 @@ func TestExGetKLineBuildRequestAndParseResponse(t *testing.T) {
 	msg := NewExGetKLine(&ExGetKLineRequest{
 		Category: 74,
 		Code:     [9]byte{'T', 'S', 'L', 'A'},
-		Period:   KLINE_TYPE_DAILY,
+		Period:   types.KLINE_TYPE_DAILY,
 		Times:    1,
 		Start:    5,
 		Count:    2,
@@ -416,7 +418,7 @@ func TestExGetKLineBuildRequestAndParseResponse(t *testing.T) {
 	name := make([]byte, 9)
 	copy(name, "TSLA")
 	buf.Write(name)
-	if err := binary.Write(buf, binary.LittleEndian, uint16(KLINE_TYPE_DAILY)); err != nil {
+	if err := binary.Write(buf, binary.LittleEndian, uint16(types.KLINE_TYPE_DAILY)); err != nil {
 		t.Fatal(err)
 	}
 	if err := binary.Write(buf, binary.LittleEndian, uint16(1)); err != nil {

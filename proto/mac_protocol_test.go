@@ -6,6 +6,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/bensema/gotdx/types"
 )
 
 // assertNearFloat64 断言两个浮点值之差不超过容差 0.001，超差则终止测试。
@@ -1554,7 +1556,7 @@ func TestMACSymbolBarsBuildRequestAndParseResponse(t *testing.T) {
 	msg := NewMACSymbolBars(&MACSymbolBarsRequest{
 		Market: 1,
 		Code:   makeMACCode22("600000"),
-		Period: KLINE_TYPE_DAILY,
+		Period: types.KLINE_TYPE_DAILY,
 		Count:  1,
 	})
 
@@ -1568,7 +1570,7 @@ func TestMACSymbolBarsBuildRequestAndParseResponse(t *testing.T) {
 	if err := binary.Read(bytes.NewReader(raw[12:]), binary.LittleEndian, &req); err != nil {
 		t.Fatalf("read request failed: %v", err)
 	}
-	if req.Market != 1 || req.Period != KLINE_TYPE_DAILY || req.Count != 1 || req.Flag1 != 1 || req.Flag2 != 1 || req.Flag4 != 1 {
+	if req.Market != 1 || req.Period != types.KLINE_TYPE_DAILY || req.Count != 1 || req.Flag1 != 1 || req.Flag2 != 1 || req.Flag4 != 1 {
 		t.Fatalf("unexpected request: %+v", req)
 	}
 
@@ -1580,7 +1582,7 @@ func TestMACSymbolBarsBuildRequestAndParseResponse(t *testing.T) {
 	copy(code, "600000")
 	buf.Write(code)
 	buf.Write(make([]byte, 10))
-	if err := buf.WriteByte(byte(KLINE_TYPE_DAILY)); err != nil {
+	if err := buf.WriteByte(byte(types.KLINE_TYPE_DAILY)); err != nil {
 		t.Fatal(err)
 	}
 	if err := binary.Write(buf, binary.LittleEndian, uint16(1)); err != nil {

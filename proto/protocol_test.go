@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/bensema/gotdx/types"
 )
 
 func TestSeqIDConcurrent(t *testing.T) {
@@ -408,7 +410,7 @@ func TestGetSecurityBarsBuildRequestAndParseResponse(t *testing.T) {
 	msg := NewGetSecurityBars(&GetSecurityBarsRequest{
 		Market:   1,
 		Code:     [6]byte{'6', '0', '0', '0', '0', '0'},
-		Category: KLINE_TYPE_DAILY,
+		Category: types.KLINE_TYPE_DAILY,
 		Times:    2,
 		Start:    3,
 		Count:    4,

@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bensema/gotdx/types"
 	"github.com/spf13/cast"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
@@ -41,7 +42,7 @@ func Utf8ToGbk(text []byte) string {
 func GetTime(data [4]byte, category uint16) time.Time {
 	newCategory := cast.ToInt(category)
 	switch newCategory {
-	case KLINE_TYPE_EXHQ_1MIN, KLINE_TYPE_1MIN, KLINE_TYPE_5MIN, KLINE_TYPE_15MIN, KLINE_TYPE_30MIN, KLINE_TYPE_1HOUR:
+	case types.KLINE_TYPE_EXHQ_1MIN, types.KLINE_TYPE_1MIN, types.KLINE_TYPE_5MIN, types.KLINE_TYPE_15MIN, types.KLINE_TYPE_30MIN, types.KLINE_TYPE_1HOUR:
 
 		yearMonthDay := Uint16(data[:2])
 		hourMinute := Uint16(data[2:4])

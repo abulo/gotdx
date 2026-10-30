@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/bensema/gotdx/types"
 	"github.com/spf13/cast"
 )
 
@@ -149,7 +150,7 @@ func (obj *GetIndexBars) ParseResponse(header *RespHeader, data []byte) error {
 
 		// 分钟类周期成交量单位为手，先除 100 归一；日线等周期不做此缩放。
 		switch newCategory {
-		case KLINE_TYPE_EXHQ_1MIN, KLINE_TYPE_1MIN, KLINE_TYPE_5MIN, KLINE_TYPE_15MIN, KLINE_TYPE_30MIN, KLINE_TYPE_1HOUR:
+		case types.KLINE_TYPE_EXHQ_1MIN, types.KLINE_TYPE_1MIN, types.KLINE_TYPE_5MIN, types.KLINE_TYPE_15MIN, types.KLINE_TYPE_30MIN, types.KLINE_TYPE_1HOUR:
 			bar.Vol /= 100
 		}
 		// 4 字节成交额。

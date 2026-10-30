@@ -5,7 +5,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
 )
 
@@ -86,7 +85,7 @@ func Test_tdx_GetSecurityBars(t *testing.T) {
 	fmt.Println("================ GetSecurityBars ================")
 	tdx := newClient()
 	defer tdx.Disconnect()
-	reply, err := tdx.GetSecurityBars(proto.KLINE_TYPE_RI_K, types.MarketSZ.Uint8(), "000001", 0, 10)
+	reply, err := tdx.GetSecurityBars(types.KLINE_TYPE_RI_K, types.MarketSZ.Uint8(), "000001", 0, 10)
 	if err != nil {
 		t.Errorf("error:%s", err)
 	}
@@ -101,7 +100,7 @@ func Test_tdx_GetIndexBars(t *testing.T) {
 	fmt.Println("================ GetIndexBars ================")
 	tdx := newClient()
 	defer tdx.Disconnect()
-	reply, err := tdx.GetIndexBars(proto.KLINE_TYPE_RI_K, types.MarketSH.Uint8(), "000001", 0, 10)
+	reply, err := tdx.GetIndexBars(types.KLINE_TYPE_RI_K, types.MarketSH.Uint8(), "000001", 0, 10)
 	if err != nil {
 		t.Errorf("error:%s", err)
 	}
