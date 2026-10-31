@@ -298,6 +298,8 @@ func (client *Client) refillLoop() {
 	rebalanceTicker := time.NewTicker(time.Minute)
 	defer refillTicker.Stop()
 	defer rebalanceTicker.Stop()
+	// 启动即补建一次，让池尽快接近满池（建池同步只建 1 条，余量靠这里补齐）。
+	client.refillPool()
 	for {
 		select {
 		case <-client.done:
@@ -632,15 +634,15 @@ func (client *Client) buildPoolLocked() (any, error) {
 	if len(addresses) == 0 {
 		return nil, errors.New("no tcp address configured")
 	}
-	poolSize := client.opt.PoolSize
 
-	// 快路径：先按配置顺序尝试首个地址（默认或 `WithTCPAddress` 指定的主地址，
-	// 沿用原单连接语义，网络正常时建池不引入探活耗时）；成功即直接建池。
+	// 快路径：按配置顺序尝试首个地址（默认或 `WithTCPAddress` 指定的主地址）。
+	// 只同步建 1 条——建池耗时等同于原库单连接，余量由补建循环每秒异步补齐，
+	// 网络正常时建池不引入探活与并发建多条的开销。
 	first := addresses[0]
-	if built := client.buildConnBatch(first, poolSize); len(built) > 0 {
-		client.pool = append(client.pool, built...)
+	if pc, reply, err := client.buildPoolConn(first); err == nil {
+		client.pool = append(client.pool, pc)
 		client.startRefillLoop()
-		return built[0].hello, nil
+		return reply, nil
 	}
 
 	// 慢路径：首个地址不可用时探活选最快——探活 = 拨号 + 握手验证（探活超时限制
@@ -667,26 +669,16 @@ func (client *Client) buildPoolLocked() (any, error) {
 		candidates = candidates[:3]
 	}
 
-	var firstReply any
-	var lastErr error
+	// 逐候选单条建连：任一候选建成一条即降级可用（先建成即停），余量由补建循环补齐；
+	// 单条失败立即尝试下一候选，波动网络下比同地址并发多条更稳。
 	for _, addr := range candidates {
-		built := client.buildConnBatch(addr, poolSize)
-		if len(built) > 0 {
-			// 建成至少一条即可先行运行，连接已入池。
-			client.pool = append(client.pool, built...)
-			firstReply = built[0].hello
-			break
+		if pc, reply, err := client.buildPoolConn(addr); err == nil {
+			client.pool = append(client.pool, pc)
+			client.startRefillLoop()
+			return reply, nil
 		}
-		lastErr = fmt.Errorf("no connection to %s", addr)
 	}
-	if len(client.pool) == 0 {
-		if lastErr == nil {
-			lastErr = errors.New("no available tcp address")
-		}
-		return nil, lastErr
-	}
-	client.startRefillLoop()
-	return firstReply, nil
+	return nil, fmt.Errorf("no connection to any candidate")
 }
 
 // startRefillLoop 启动补建循环（仅一次）。调用方已持池锁，直接启动避免二次加锁；
@@ -791,40 +783,6 @@ func (client *Client) probeReachable(addresses []string, timeout time.Duration) 
 		return merged[i].latency < merged[j].latency
 	})
 	return merged
-}
-
-// buildConnBatch 并发向同一地址拨号 `n` 条连接并完成模式握手，返回成功建成的连接；
-// 单条失败不影响其余，整体耗时由最慢一次拨号决定。`pooledConn.hello` 保存握手应答。
-func (client *Client) buildConnBatch(address string, n int) []*pooledConn {
-	if n <= 0 {
-		n = 1
-	}
-	type batchResult struct {
-		pc    *pooledConn
-		reply any
-	}
-	resultsCh := make(chan batchResult, n)
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			pc, reply, err := client.buildPoolConn(address)
-			if err != nil {
-				return
-			}
-			resultsCh <- batchResult{pc: pc, reply: reply}
-		}()
-	}
-	wg.Wait()
-	close(resultsCh)
-
-	built := make([]*pooledConn, 0, n)
-	for r := range resultsCh {
-		r.pc.hello = r.reply
-		built = append(built, r.pc)
-	}
-	return built
 }
 
 // ConnectEx 连接扩展市场服务器并完成登录握手。

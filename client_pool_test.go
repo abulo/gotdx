@@ -21,6 +21,14 @@ func TestPoolBuildsExpectedConns(t *testing.T) {
 	c.mu.Lock()
 	got := len(c.pool)
 	c.mu.Unlock()
+	// 建池同步只建 1 条，余量由补建循环每秒补齐；轮询等待池补满。
+	deadline := time.Now().Add(4 * time.Second)
+	for got < 3 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		c.mu.Lock()
+		got = len(c.pool)
+		c.mu.Unlock()
+	}
 	if got != 3 {
 		t.Fatalf("want pool of 3, got %d", got)
 	}
@@ -39,6 +47,21 @@ func TestPoolRoundRobin(t *testing.T) {
 		t.Fatalf("connect failed: %v", err)
 	}
 	defer c.Disconnect()
+
+	// 建池同步只建 1 条，等待补建循环补满后轮询语义才可验证。
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		c.mu.Lock()
+		filled := len(c.pool)
+		c.mu.Unlock()
+		if filled == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pool was not refilled in time")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	pc1, err := c.acquire()
 	if err != nil {
@@ -137,6 +160,14 @@ func TestConnectIdempotent(t *testing.T) {
 	c.mu.Lock()
 	got := len(c.pool)
 	c.mu.Unlock()
+	// 建池同步只建 1 条，余量由补建循环每秒补齐；轮询等待池补满。
+	deadline := time.Now().Add(4 * time.Second)
+	for got < 2 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		c.mu.Lock()
+		got = len(c.pool)
+		c.mu.Unlock()
+	}
 	if got != 2 {
 		t.Fatalf("pool size must stay 2, got %d", got)
 	}
