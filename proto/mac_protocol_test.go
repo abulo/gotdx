@@ -686,7 +686,7 @@ func TestMACQuotesBuildRequestAndParseResponse(t *testing.T) {
 	if reply.Code != "600000" || reply.Name != "PingAn Bank" || reply.Count != 2 {
 		t.Fatalf("unexpected reply: %+v", reply)
 	}
-	if len(reply.ChartData) != 2 || reply.ChartData[0].Time != "09:30:00" || reply.ChartData[1].Vol != 2234 {
+	if len(reply.ChartData) != 2 || reply.ChartData[0].Time != "09:31:00" || reply.ChartData[1].Vol != 2234 {
 		t.Fatalf("unexpected chart data: %+v", reply.ChartData)
 	}
 	assertNearFloat64(t, reply.Close, 10.5, "close")

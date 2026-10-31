@@ -139,8 +139,9 @@ func (obj *MACQuotes) ParseResponse(header *RespHeader, data []byte) error {
 		// 条目布局：分钟偏移（0:2）、价格（2:6）、均价（6:10）、累计成交量（10:14）、动量（14:18）。
 		minutes := binary.LittleEndian.Uint16(data[pos : pos+2])
 		item := MACQuoteChartItem{
-			// 分钟偏移换算为时与分，生成分时时间标签。
-			Time:     time.Date(0, 1, 1, int(minutes/60)%24, int(minutes%60), 0, 0, time.Local).Format("15:04:05"),
+			// 分钟偏移为分钟开始时刻，分时标签取分钟结束时点（整体后移一分钟），
+			// 对齐行情展示口径：第一根 09:31、最后一根 15:00（与 `MACTickChart` 一致）。
+			Time:     time.Date(0, 1, 1, int(minutes/60)%24, int(minutes%60), 0, 0, time.Local).Add(time.Minute).Format("15:04:05"),
 			Price:    float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+2 : pos+6]))),
 			Avg:      float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+6 : pos+10]))),
 			Vol:      binary.LittleEndian.Uint32(data[pos+10 : pos+14]),
