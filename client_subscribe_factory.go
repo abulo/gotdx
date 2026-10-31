@@ -48,11 +48,12 @@ type SubscribeSource[T any] struct {
 	Changed func(old, new T) bool // 两次快照是否不同；`nil` 时使用深比较
 }
 
-// subHandler 为一个订阅处理函数的内部状态：取消标记用原子变量，回调线程与取消
-// 线程可并发读写。
+// subHandler 为一个订阅处理函数的内部状态：取消与待推基线标记用原子变量，
+// 回调线程与订阅线程可并发读写。
 type subHandler struct {
 	handler   func(any) bool // 包装后的处理函数，入参已断言为快照类型
 	cancelled atomic.Bool    // 取消标记：处理函数返回 `false` 或调用取消函数时置位
+	pending   atomic.Bool    // 待推基线标记：合并追加的订阅下轮无条件推送当前快照
 }
 
 // subTask 为一个数据源的轮询任务：多个订阅（`subHandler`）共享一次拉取。
@@ -137,10 +138,12 @@ func (f *Subscriber) Subscribe[T any](source SubscribeSource[T], interval time.D
 		return func() { f.cancelTask(t, sh) }, nil
 	}
 
-	// 同 `Key` 已存在任务：校验类型一致后合并订阅。
+	// 同 `Key` 已存在任务：校验类型一致后合并订阅；新处理函数标记待推基线，
+	// 即使快照当前无变化也会在下一轮无条件收到最新快照。
 	if t.typ != typ {
 		return nil, fmt.Errorf("subscribe key %q already bound to type %v", key, t.typ)
 	}
+	sh.pending.Store(true)
 	t.handlers = append(t.handlers, sh)
 
 	// 间隔更小或任务已停止时重建循环：旧循环经停止通道退出（幂等关闭），新循环
@@ -244,8 +247,8 @@ func (f *Subscriber) runTask(t *subTask) {
 }
 
 // pumpTask 拉取一次快照并按 diff 推送：`force` 为真且尚无快照时无条件推送建立
-// 基线（已有快照则退化为正常 diff）；快照无变化时不推送。返回 `false` 表示任务
-// 应退出（全部处理函数已取消）。
+// 基线（已有快照则退化为正常 diff）；快照无变化时不推送，待推基线的追加订阅除外。
+// 返回 `false` 表示任务应退出（全部处理函数已取消）。
 func (f *Subscriber) pumpTask(t *subTask, force bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -257,29 +260,40 @@ func (f *Subscriber) pumpTask(t *subTask, force bool) bool {
 	if err != nil {
 		return true // 拉取失败或拉取函数 panic，跳过本轮
 	}
-	if !force && t.hasLast && !t.safeChanged(t.last, v) {
-		return true // 快照无变化，不推送
+	changed := force || !t.hasLast || t.safeChanged(t.last, v)
+	if changed {
+		t.last = v
+		t.hasLast = true
 	}
-	t.last = v
-	t.hasLast = true
 
-	// 锁内拷贝处理函数快照，出锁回调：回调期间订阅增删不影响本次推送。
+	// 锁内拷贝活跃处理函数并压缩剔除已取消项，出锁回调：回调期间订阅增删不影响
+	// 本次推送，同时收敛 `handlers` 切片，避免高频订阅-取消导致其无限增长。
 	f.mu.Lock()
-	hs := make([]*subHandler, len(t.handlers))
-	copy(hs, t.handlers)
+	hs := make([]*subHandler, 0, len(t.handlers))
+	for _, h := range t.handlers {
+		if !h.cancelled.Load() {
+			hs = append(hs, h)
+		}
+	}
+	t.handlers = hs
 	f.mu.Unlock()
 
-	alive := false
 	for _, h := range hs {
-		if h.cancelled.Load() {
+		// 追加订阅（待推基线）：无条件推送当前快照建立基线，不参与 diff 判定。
+		if h.pending.Swap(false) {
+			if !t.safeHandler(h, v) {
+				h.cancelled.Store(true)
+			}
 			continue
 		}
-		alive = true
+		if !changed {
+			continue
+		}
 		if !t.safeHandler(h, v) {
 			h.cancelled.Store(true) // 处理函数返回 `false`，取消该订阅
 		}
 	}
-	return alive
+	return len(hs) > 0
 }
 
 // safeFetch 包装拉取调用：拉取函数 panic 时按一次失败处理，不影响任务循环。

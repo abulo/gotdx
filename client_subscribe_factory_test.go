@@ -353,3 +353,216 @@ func TestSubscriberCloseStopsAll(t *testing.T) {
 		t.Fatalf("pushes must stop after close: before=%d after=%d", after, got)
 	}
 }
+
+// TestSubscriberJoiningHandlerGetsBaseline 验证合并追加的订阅（同 `Key` 第二订阅）
+// 即使快照无变化也能立即收到当前快照建立基线，而不是等到数据变化。
+func TestSubscriberJoiningHandlerGetsBaseline(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(1))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	var firstPushes, secondPushes atomic.Int64
+	sub := c.Subscriber()
+
+	// 第一个订阅：固定值数据源，只有基线一次推送。
+	_, errA := sub.Subscribe(
+		SubscribeSource[int64]{Key: "k", Fetch: func() (int64, error) { return 42, nil }},
+		100*time.Millisecond,
+		func(v int64) bool { firstPushes.Add(1); return true })
+	if errA != nil {
+		t.Fatalf("first subscribe failed: %v", errA)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for firstPushes.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("first baseline never happened")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// 第二个订阅（同 Key 追加）：数据仍无变化，但应立即收到当前快照。
+	_, errB := sub.Subscribe(
+		SubscribeSource[int64]{Key: "k", Fetch: func() (int64, error) { return 42, nil }},
+		100*time.Millisecond,
+		func(v int64) bool { secondPushes.Add(1); return true })
+	if errB != nil {
+		t.Fatalf("second subscribe failed: %v", errB)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for secondPushes.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("joining handler must get baseline even when unchanged")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := secondPushes.Load(); got != 1 {
+		t.Fatalf("unchanged source must push joining handler once, got %d", got)
+	}
+}
+
+// TestSubscriberHandlerFalseCancels 验证处理函数返回 `false` 后该订阅取消、不再
+// 推送，同任务其他处理函数不受影响。
+func TestSubscriberHandlerFalseCancels(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(1))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	var seed atomic.Int64
+	var cancellerPushes, keeperPushes atomic.Int64
+	sub := c.Subscriber()
+
+	_, errA := sub.Subscribe(
+		SubscribeSource[int64]{
+			Key:   "k",
+			Fetch: func() (int64, error) { return seed.Add(1), nil },
+		},
+		60*time.Millisecond,
+		func(v int64) bool { cancellerPushes.Add(1); return false }) // 首次即取消
+	if errA != nil {
+		t.Fatalf("canceller subscribe failed: %v", errA)
+	}
+	_, errB := sub.Subscribe(
+		SubscribeSource[int64]{
+			Key:   "k",
+			Fetch: func() (int64, error) { return seed.Add(1), nil },
+		},
+		60*time.Millisecond,
+		func(v int64) bool { keeperPushes.Add(1); return true })
+	if errB != nil {
+		t.Fatalf("keeper subscribe failed: %v", errB)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for keeperPushes.Load() < 4 {
+		if time.Now().After(deadline) {
+			t.Fatalf("keeper pushes insufficient: %d", keeperPushes.Load())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := cancellerPushes.Load(); got != 1 {
+		t.Fatalf("cancelled handler must not receive more pushes, got %d", got)
+	}
+}
+
+// TestSubscriberDisconnectStops 验证客户端 `Disconnect` 后工厂内全部订阅停止推送。
+func TestSubscriberDisconnectStops(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(1))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+
+	var pushes atomic.Int64
+	sub := c.Subscriber()
+	_, err := sub.Subscribe(
+		SubscribeSource[int64]{
+			Fetch: func() (int64, error) { return time.Now().UnixNano(), nil },
+		},
+		50*time.Millisecond,
+		func(v int64) bool { pushes.Add(1); return true })
+	if err != nil {
+		t.Fatalf("subscribe failed: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for pushes.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("baseline push never happened")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := c.Disconnect(); err != nil {
+		t.Fatalf("disconnect failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	after := pushes.Load()
+	time.Sleep(200 * time.Millisecond)
+	if got := pushes.Load(); got != after {
+		t.Fatalf("pushes must stop after disconnect: before=%d after=%d", after, got)
+	}
+}
+
+// TestSubscriberCancelledHandlersCompacted 验证取消的订阅从任务处理函数列表中
+// 剔除：高频订阅-取消后列表长度收敛，不随取消次数无限增长。
+func TestSubscriberCancelledHandlersCompacted(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(1))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	var pushes atomic.Int64
+	sub := c.Subscriber()
+
+	// 大量订阅-取消（同 Key 独立 handler），保留一个活跃订阅。
+	kept, err := sub.Subscribe(
+		SubscribeSource[int64]{
+			Key:   "k",
+			Fetch: func() (int64, error) { return time.Now().UnixNano(), nil },
+		},
+		30*time.Millisecond,
+		func(v int64) bool { pushes.Add(1); return true })
+	if err != nil {
+		t.Fatalf("keeper subscribe failed: %v", err)
+	}
+	defer kept()
+
+	for i := 0; i < 50; i++ {
+		cancel, err := sub.Subscribe(
+			SubscribeSource[int64]{
+				Key:   "k",
+				Fetch: func() (int64, error) { return time.Now().UnixNano(), nil },
+			},
+			30*time.Millisecond,
+			func(v int64) bool { return true })
+		if err != nil {
+			t.Fatalf("transient subscribe %d failed: %v", i, err)
+		}
+		cancel()
+	}
+
+	// 等待活跃订阅持续推送，确认任务存活且压缩已生效。
+	deadline := time.Now().Add(2 * time.Second)
+	for pushes.Load() < 5 {
+		if time.Now().After(deadline) {
+			t.Fatalf("keeper must keep receiving pushes: %d", pushes.Load())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// 压缩后任务处理函数列表应只保留活跃订阅（加少量轮询窗口内的残留）。
+	sub.mu.Lock()
+	var task *subTask
+	for _, tt := range sub.tasks {
+		if tt.key == "k" {
+			task = tt
+			break
+		}
+	}
+	sub.mu.Unlock()
+	if task == nil {
+		t.Fatal("task for key k not found")
+	}
+	sub.mu.Lock()
+	n := len(task.handlers)
+	sub.mu.Unlock()
+	if n > 3 {
+		t.Fatalf("handlers must be compacted after cancels, got %d", n)
+	}
+}
