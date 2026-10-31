@@ -5,9 +5,11 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
+	"sort"
 	"sync"
 	"time"
 
@@ -74,14 +76,17 @@ type Client struct {
 	ex                  *Client
 	decimalPoints       map[uint8]map[string]int8
 	decimalPointsLoaded map[uint8]bool
+	lastReachable       []string // 最近一次探活确认可达的地址列表，供重平衡与补建收敛候选
+	rebalanceTick       int      // 重平衡执行计数，每 5 次触发一次全量探活刷新可达集
 }
 
 // pooledConn 为池内一条 TCP 连接：自带串行锁，保证该连接上的请求严格
 // 先写后读、帧边界不被并发破坏。
 type pooledConn struct {
-	conn net.Conn
-	mu   sync.Mutex // 该连接串行锁
-	addr string     // 实际连通的 `host:port` 地址
+	conn  net.Conn
+	mu    sync.Mutex // 该连接串行锁
+	addr  string     // 实际连通的 `host:port` 地址
+	hello any        // 建连时模式握手的应答，仅建池返回首个应答时使用
 }
 
 // CurrentAddress 返回当前池内首条连接实际连通的服务器 `host:port` 地址。
@@ -178,38 +183,6 @@ func (client *Client) addresses() []string {
 	}
 	addresses = append(addresses, client.opt.TCPAddressPool...)
 	return addresses
-}
-
-// probeOrder 并发测速并按可达性、延迟排序地址：可达且延迟低的地址排前，不可达与重复
-// 地址剔除，测速结果未覆盖的原始地址补在末尾避免候选丢失；测速全部失败时按原始顺序返回。
-//
-// 参数 `addresses` 为待排序的 `host:port` 地址；`timeout` 为单次拨号探测超时，非正数时
-// 由 `ProbeAddresses` 回退默认超时。
-func probeOrder(addresses []string, timeout time.Duration) []string {
-	results := ProbeAddresses(addresses, timeout)
-	if len(results) == 0 {
-		return addresses
-	}
-	ordered := make([]string, 0, len(addresses))
-	seen := make(map[string]struct{}, len(addresses))
-	for _, result := range results {
-		if !result.Reachable {
-			continue
-		}
-		if _, ok := seen[result.Address]; ok {
-			continue
-		}
-		ordered = append(ordered, result.Address)
-		seen[result.Address] = struct{}{}
-	}
-	// 再补齐测速结果中未出现的原始地址，保证候选集合不丢失。
-	for _, address := range addresses {
-		if _, ok := seen[address]; ok {
-			continue
-		}
-		ordered = append(ordered, address)
-	}
-	return ordered
 }
 
 // timeout 返回本次连接与读写共用的超时时长。
@@ -339,18 +312,85 @@ func (client *Client) refillLoop() {
 
 // rebalancePool 每分钟对候选地址重新测速一次，把连接池切换到当前最快的服务器。
 //
-// 先并发探活并按可达性、延迟排序（探活超时限制 5 秒），取首个可达地址为最快目标；
-// 池内连接已全部指向该地址时不作调整。否则并发预建 `PoolSize` 条指向最快地址的连接，
-// 全部失败保持现状；至少建成一条则先入池再关闭旧连接（先建后删，切换期间不出现空窗），
-// 未建满的余量由补建循环继续补齐。
+// 候选收敛为"池内地址 + 最近一次可达地址"，每 5 次触发一次全量探活刷新可达集；
+// 并发探活并按可达性、延迟排序（探活超时限制 5 秒），取首个可达地址为最快目标。
+// 池内连接已全部指向该地址时不作调整。否则并发预建 `PoolSize` 条指向最快地址的
+// 连接，全部失败保持现状；至少建成一条则先入池再关闭旧连接（先建后删，切换期间
+// 不出现空窗），未建满的余量由补建循环继续补齐。
 func (client *Client) rebalancePool() {
 	// 探活与拨号均为网络操作，在锁外执行，避免阻塞其他调用方借还连接。
-	probeTimeout := min(client.timeout(), 5*time.Second)
-	ordered := probeOrder(client.addresses(), probeTimeout)
-	if len(ordered) == 0 {
+	client.mu.Lock()
+	if client.closed {
+		client.mu.Unlock()
 		return
 	}
-	fastest := ordered[0]
+	client.rebalanceTick++
+	fullProbe := client.rebalanceTick%5 == 0
+	poolAddrs := make([]string, 0, len(client.pool))
+	for _, pc := range client.pool {
+		duplicated := false
+		for _, a := range poolAddrs {
+			if a == pc.addr {
+				duplicated = true
+				break
+			}
+		}
+		if !duplicated {
+			poolAddrs = append(poolAddrs, pc.addr)
+		}
+	}
+	prevReachable := append([]string(nil), client.lastReachable...)
+	client.mu.Unlock()
+
+	// 构建候选集：默认收敛为池内地址与历史可达地址；每 5 次执行一次全量
+	// 探活（覆盖配置地址池），以便发现网络变化后新增的可达服务器。
+	var candidates []string
+	if !fullProbe {
+		seen := make(map[string]struct{}, len(poolAddrs)+len(prevReachable))
+		candidates = make([]string, 0, len(poolAddrs)+len(prevReachable))
+		for _, a := range poolAddrs {
+			if _, ok := seen[a]; ok {
+				continue
+			}
+			candidates = append(candidates, a)
+			seen[a] = struct{}{}
+		}
+		for _, a := range prevReachable {
+			if _, ok := seen[a]; ok {
+				continue
+			}
+			candidates = append(candidates, a)
+			seen[a] = struct{}{}
+		}
+	} else {
+		candidates = client.addresses()
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	probeTimeout := min(client.timeout(), 5*time.Second)
+	verified := client.probeReachable(candidates, probeTimeout)
+	var fastest string
+	reachable := make([]string, 0, len(verified))
+	for _, r := range verified {
+		if !r.reachable {
+			continue
+		}
+		if fastest == "" {
+			fastest = r.address
+		}
+		reachable = append(reachable, r.address)
+	}
+	client.mu.Lock()
+	if len(reachable) > 0 {
+		client.lastReachable = reachable
+	}
+	client.mu.Unlock()
+	if fastest == "" {
+		// 收敛候选全部不可达：保持现有连接不动。
+		return
+	}
 
 	client.mu.Lock()
 	if client.closed {
@@ -427,6 +467,8 @@ func (client *Client) refillPool() {
 	if len(client.pool) > 0 {
 		known = client.pool[0].addr
 	}
+	// 锁内拷贝最近一次可达记录，供池全空时收敛候选使用。
+	lastReachable := append([]string(nil), client.lastReachable...)
 	client.mu.Unlock()
 
 	// 测速与拨号均为网络操作，在锁外执行，避免阻塞其他调用方借还连接。
@@ -434,13 +476,18 @@ func (client *Client) refillPool() {
 	if known != "" {
 		address = known
 	} else {
-		// 池完全为空（初始建池失败或全部断连）：探活排序后取首个候选。
+		// 池完全为空（初始建池失败或全部断连）：优先用最近一次可达地址收敛候选，
+		// 避免每轮补建都全量探活；无可达记录时回退配置地址池。
 		probeTimeout := min(client.timeout(), 5*time.Second)
-		ordered := probeOrder(client.addresses(), probeTimeout)
-		if len(ordered) == 0 {
+		candidates := client.addresses()
+		if len(lastReachable) > 0 {
+			candidates = lastReachable
+		}
+		verified := client.probeReachable(candidates, probeTimeout)
+		if len(verified) == 0 {
 			return
 		}
-		address = ordered[0]
+		address = verified[0].address
 	}
 	pc, _, err := client.buildPoolConn(address)
 	if err != nil {
@@ -573,55 +620,64 @@ func (client *Client) Connect() (*proto.Hello1Reply, error) {
 	return r, nil
 }
 
-// buildPoolLocked 在调用方已持池锁的前提下并发预建 `PoolSize` 条连接并启动补建循环。
+// buildPoolLocked 在调用方已持池锁的前提下按候选顺序逐级建池并启动补建循环。
 //
-// 候选地址先按可达性与延迟排序（探活超时限制 5 秒），再并发拨号前 `PoolSize` 个候选：
-// 各地址拨号或握手失败即从候选剔除继续尝试下一地址；全部失败返回最后一次错误；部分成功则
-// 以已建条数先行运行，由补建循环补齐。返回首个成功连接的握手应答；候选为空时返回 `nil` 与错误。
+// 探活升级为"拨号 + 握手验证"：先并发拨号筛选可达地址（探活超时限制 5 秒），再对可达
+// 地址并发执行模式握手，握手成功才判定为可用并按总耗时（拨号 + 握手）排序。建池从最快
+// 可用地址开始，每个候选并发拨号 `PoolSize` 条，建成至少一条即停止（先建成即降级可用，
+// 未建满的余量由补建循环补齐）；当前候选全部失败时按排序逐级回退下一候选。全部候选均
+// 失败返回最后一次错误与 `nil`。返回首个成功连接的握手应答；候选为空时返回 `nil` 与错误。
 func (client *Client) buildPoolLocked() (any, error) {
 	addresses := client.addresses()
 	if len(addresses) == 0 {
 		return nil, errors.New("no tcp address configured")
 	}
-	// 建池始终优先连接可达且低延迟的服务器：探活超时限制在 5 秒内，避免在
-	// 大面积不可达的候选地址上浪费拨号时间（正式连接仍使用完整超时）。
-	probeTimeout := min(client.timeout(), 5*time.Second)
-	addresses = probeOrder(addresses, probeTimeout)
 	poolSize := client.opt.PoolSize
 
-	// 并发拨号 `PoolSize` 条连接，候选地址按排序轮转分配（第 `i` 条用 `addresses[i%len]`）：
-	// 单地址超时不阻塞其余地址，整体耗时由最慢一次拨号决定；地址不足时同一地址并发建多条。
-	limit := poolSize
-	type poolResult struct {
-		pc    *pooledConn
-		reply any
-		err   error
+	// 快路径：先按配置顺序尝试首个地址（默认或 `WithTCPAddress` 指定的主地址，
+	// 沿用原单连接语义，网络正常时建池不引入探活耗时）；成功即直接建池。
+	first := addresses[0]
+	if built := client.buildConnBatch(first, poolSize); len(built) > 0 {
+		client.pool = append(client.pool, built...)
+		client.startRefillLoop()
+		return built[0].hello, nil
 	}
-	results := make(chan poolResult, limit)
-	var wg sync.WaitGroup
-	for i := 0; i < limit; i++ {
-		wg.Add(1)
-		go func(addr string) {
-			defer wg.Done()
-			pc, reply, err := client.buildPoolConn(addr)
-			results <- poolResult{pc: pc, reply: reply, err: err}
-		}(addresses[i%len(addresses)])
-	}
-	wg.Wait()
-	close(results)
 
-	var lastErr error
+	// 慢路径：首个地址不可用时探活选最快——探活 = 拨号 + 握手验证（探活超时限制
+	// 5 秒），握手成功者优先排序，仅拨号成功者排后供回退。
+	probeTimeout := min(client.timeout(), 5*time.Second)
+	reachable := client.probeReachable(addresses, probeTimeout)
+	client.lastReachable = make([]string, 0, len(reachable))
+	for _, r := range reachable {
+		if r.reachable {
+			client.lastReachable = append(client.lastReachable, r.address)
+		}
+	}
+
+	// 候选 = 探活结果（握手可用优先，仅拨号可达排后）；探活全部失败（拨号都不通）
+	// 时回退配置顺序。回退深度限制为 3，避免候选全部不可达时逐级拨号放大耗时。
+	candidates := make([]string, 0, len(reachable))
+	for _, r := range reachable {
+		candidates = append(candidates, r.address)
+	}
+	if len(candidates) == 0 {
+		candidates = addresses
+	}
+	if len(candidates) > 3 {
+		candidates = candidates[:3]
+	}
+
 	var firstReply any
-	for r := range results {
-		if r.err != nil {
-			// 该地址拨号或握手失败，由补建循环继续尝试其余候选。
-			lastErr = r.err
-			continue
+	var lastErr error
+	for _, addr := range candidates {
+		built := client.buildConnBatch(addr, poolSize)
+		if len(built) > 0 {
+			// 建成至少一条即可先行运行，连接已入池。
+			client.pool = append(client.pool, built...)
+			firstReply = built[0].hello
+			break
 		}
-		if firstReply == nil {
-			firstReply = r.reply
-		}
-		client.pool = append(client.pool, r.pc)
+		lastErr = fmt.Errorf("no connection to %s", addr)
 	}
 	if len(client.pool) == 0 {
 		if lastErr == nil {
@@ -629,13 +685,146 @@ func (client *Client) buildPoolLocked() (any, error) {
 		}
 		return nil, lastErr
 	}
-	// 启动补建循环（仅一次）。调用方已持池锁，直接启动避免二次加锁；
-	// 停止信号通道先建好，保证循环可按 `Disconnect` 退出。
+	client.startRefillLoop()
+	return firstReply, nil
+}
+
+// startRefillLoop 启动补建循环（仅一次）。调用方已持池锁，直接启动避免二次加锁；
+// 停止信号通道先建好，保证循环可按 `Disconnect` 退出。
+func (client *Client) startRefillLoop() {
 	if client.done == nil {
 		client.done = make(chan struct{})
 	}
 	client.refill.Do(func() { go client.refillLoop() })
-	return firstReply, nil
+}
+
+// probeResult 为一次探活验证的结果：`address` 为 `host:port` 地址，`reachable` 表示
+// 拨号与模式握手均成功，`latency` 为总耗时（握手成功时为拨号加握手耗时，否则为拨号耗时）。
+type probeResult struct {
+	address   string
+	reachable bool
+	latency   time.Duration
+}
+
+// probeReachable 探活验证候选地址：先并发拨号筛选（单次拨号超时 `timeout`），再对
+// 拨号可达的地址并发执行当前模式握手。返回结果覆盖所有拨号成功的地址：握手成功者
+// 在前（按拨号加握手总耗时升序），仅拨号成功但握手失败者排后（按拨号耗时升序），
+// 供建池逐级回退时优先尝试已验证可用的地址。握手协议不存在的模式（MAC）以拨号
+// 成功即判定可用。
+func (client *Client) probeReachable(addresses []string, timeout time.Duration) []probeResult {
+	if len(addresses) == 0 {
+		return nil
+	}
+	// 阶段一：并发拨号筛选，保留 TCP 可达的地址并记录拨号耗时。
+	var (
+		mu     sync.Mutex
+		wg     sync.WaitGroup
+		dialed = make([]probeResult, 0, len(addresses))
+	)
+	for _, address := range addresses {
+		address := address
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			started := time.Now()
+			conn, err := net.DialTimeout("tcp", address, timeout)
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			mu.Lock()
+			dialed = append(dialed, probeResult{address: address, latency: time.Since(started)})
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if len(dialed) == 0 {
+		return nil
+	}
+
+	// 阶段二：对拨号可达的地址并发握手验证；握手成功标记可用并计入握手耗时。
+	var verified []probeResult
+	for _, r := range dialed {
+		r := r
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := net.DialTimeout("tcp", r.address, timeout)
+			if err != nil {
+				return
+			}
+			started := time.Now()
+			pc := &pooledConn{conn: conn, addr: r.address}
+			pc.mu.Lock()
+			_, hErr := client.handshakeOn(pc)
+			pc.mu.Unlock()
+			_ = conn.Close()
+			if hErr != nil {
+				return
+			}
+			mu.Lock()
+			verified = append(verified, probeResult{address: r.address, reachable: true, latency: time.Since(started)})
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// 合并：握手成功者在前（总耗时升序），仅拨号成功者排后（拨号耗时升序）。
+	merged := make([]probeResult, 0, len(dialed))
+	merged = append(merged, verified...)
+	for _, r := range dialed {
+		duplicated := false
+		for _, v := range merged {
+			if v.address == r.address {
+				duplicated = true
+				break
+			}
+		}
+		if !duplicated {
+			merged = append(merged, r)
+		}
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].reachable != merged[j].reachable {
+			return merged[i].reachable
+		}
+		return merged[i].latency < merged[j].latency
+	})
+	return merged
+}
+
+// buildConnBatch 并发向同一地址拨号 `n` 条连接并完成模式握手，返回成功建成的连接；
+// 单条失败不影响其余，整体耗时由最慢一次拨号决定。`pooledConn.hello` 保存握手应答。
+func (client *Client) buildConnBatch(address string, n int) []*pooledConn {
+	if n <= 0 {
+		n = 1
+	}
+	type batchResult struct {
+		pc    *pooledConn
+		reply any
+	}
+	resultsCh := make(chan batchResult, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pc, reply, err := client.buildPoolConn(address)
+			if err != nil {
+				return
+			}
+			resultsCh <- batchResult{pc: pc, reply: reply}
+		}()
+	}
+	wg.Wait()
+	close(resultsCh)
+
+	built := make([]*pooledConn, 0, n)
+	for r := range resultsCh {
+		r.pc.hello = r.reply
+		built = append(built, r.pc)
+	}
+	return built
 }
 
 // ConnectEx 连接扩展市场服务器并完成登录握手。

@@ -194,13 +194,15 @@ func TestRebalanceSwitchesToFastest(t *testing.T) {
 	defer bStop()
 
 	c := New(WithTCPAddress(aAddr), WithTCPAddressPool(bAddr), WithTimeoutSec(5), WithPoolSize(2))
-	// 手动构造"已连接旧地址 A"的池。
+	// 手动构造"已连接旧地址 A"的池，并预置最近一次探活的可达记录（含 A 与 B），
+	// 供重平衡收敛候选使用。
 	pcA, _, err := c.buildPoolConn(aAddr)
 	if err != nil {
 		t.Fatalf("build conn to A failed: %v", err)
 	}
 	c.mu.Lock()
 	c.pool = []*pooledConn{pcA}
+	c.lastReachable = []string{aAddr, bAddr}
 	c.mu.Unlock()
 
 	// 关闭 A 模拟服务器不可达，触发重平衡。
