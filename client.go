@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"sort"
 	"sync"
@@ -811,10 +812,12 @@ func (client *Client) buildPoolLocked() (any, error) {
 		return nil, errors.New("no tcp address configured")
 	}
 
-	// 快路径：并行拨号配置前 3 个候选，收到第一个成功即返回——波动网络下无需等待
-	// 首地址超时即可命中可达服务器（原库为串行逐候选拨号）；稳定网络下首地址先
-	// 成功，耗时与单拨相同。只同步建 1 条返回，余量由补建循环异步补齐；其余候选
-	// 的并发结果由清理 goroutine 收集：成功连接入池复用（不超 `PoolSize`），失败关闭。
+	// 快路径：随机抽取并并行拨号 `limit` 个候选（默认 3），收到第一个成功即返回——
+	// 波动网络下无需等待首地址超时即可命中可达服务器，随机化避免固定前几个候选
+	// 同时落在同一波动窗口时整体判负（原库为串行逐候选拨号，分布窄正因固定单地址；
+	// 新库以候选冗余对冲波动，正常网络下各候选毫秒级拨号，随机不损失速度）。
+	// 只同步建 1 条返回，余量由补建循环异步补齐；其余候选的并发结果由清理
+	// goroutine 收集：成功连接入池复用（不超 `PoolSize`），失败关闭。
 	type connRes struct {
 		pc    *pooledConn
 		reply any
@@ -825,7 +828,7 @@ func (client *Client) buildPoolLocked() (any, error) {
 		limit = len(addresses)
 	}
 	resultsCh := make(chan connRes, limit)
-	for i := 0; i < limit; i++ {
+	for _, i := range rand.Perm(len(addresses))[:limit] {
 		addr := addresses[i]
 		go func() {
 			// 快路径拨号用短超时：行情服务器正常拨号在几十毫秒量级，偶发 1 秒级
