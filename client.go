@@ -315,13 +315,18 @@ func (client *Client) refillLoop() {
 	defer refillTicker.Stop()
 	defer heartbeatTicker.Stop()
 	defer rebalanceTicker.Stop()
+	// 停止通道在 `Disconnect` 持锁关闭并置空，锁内取一次快照供本循环使用，
+	// 避免与 `done` 字段的置空形成数据竞争。
+	client.mu.Lock()
+	done := client.done
+	client.mu.Unlock()
 	// 启动即并发补满池余量（建池同步只建 1 条），让高并发场景无需等待每秒补建；
 	// 单条失败不阻塞，余量由后续补建循环继续补齐。
 	client.refillPoolBulk()
 	client.refillPool()
 	for {
 		select {
-		case <-client.done:
+		case <-done:
 			return
 		case <-refillTicker.C:
 			client.refillPool()
