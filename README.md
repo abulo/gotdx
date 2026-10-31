@@ -118,7 +118,7 @@ client := gotdx.New(
 
 ### 连接池
 
-`gotdx.Client` 以**动态连接池**与行情服务器通信：`Connect`（或 `ConnectEx` / `ConnectMAC`）按 `WithPoolSize` 配置池容量，**同步只建 1 条连接立即返回**（建池耗时等同于原库单连接，网络正常时不引入探活与并发建多条的开销），余量由后台补建循环每秒异步补齐；每条连接内部串行执行请求、连接之间并行，吞吐不受单连接往返限制。建池走快路径：先按配置顺序尝试首个地址（默认或 `WithTCPAddress` 指定的主地址）；首个地址不可用时才并发探活——探活为"拨号 + 模式握手验证"，握手成功才判定可用并按总耗时排序，池内全部连接统一指向当前最快可用服务器。单个地址拨号或握手失败立即按排序逐级回退下一候选（深度限制 3），任一候选建成一条即降级可用。运行期间**每分钟**重新探活一次并切换到当前最快的服务器（候选收敛为池内地址与最近可达地址，每 5 次全量刷新一次），网络波动或服务器迁移时连接池自动跟随。
+`gotdx.Client` 以**动态连接池**与行情服务器通信：`Connect`（或 `ConnectEx` / `ConnectMAC`）按 `WithPoolSize` 配置池容量，建池走**并行快路径**——并发拨号配置前 3 个候选、收到第一个成功即返回（波动网络无需等待首地址超时即可命中可达服务器），其余候选已建成的连接入池复用；快路径拨号与探活统一使用 **500ms 短超时**，服务器偶发秒级慢响应被直接排除而非踩中样本，全候选短超时失败时走**流水线探活**（拨号成功即握手、首个成功即复用）兜底。池内余量由后台补建循环异步补齐；每条连接内部串行执行请求、连接之间并行，吞吐不受单连接往返限制。运行期间**每分钟**重新探活并切换到当前最快的服务器（候选收敛为池内地址与最近可达地址，每 5 次全量刷新一次）；另有**应用层心跳**（每 30 秒对空闲连接发送握手协议验证存活，2 秒短超时判定僵死连接并丢弃补建）与 **TCP keepalive**（15 秒周期，兜底无握手协议的 MAC 模式），网络波动或服务器迁移时连接池自动跟随。
 
 ```go
 client := gotdx.New(
@@ -131,7 +131,55 @@ if _, err := client.Connect(); err != nil {
 defer client.Disconnect()
 ```
 
-运行期某条连接被丢弃（网络错误、响应帧损坏）后，后台补建循环每秒检查池容量并自动补齐；`Disconnect` 关闭池内全部连接并停止补建。`CurrentAddress` 返回池内首条连接实际连通的服务器地址。各查询方法保持原有签名，可安全并发调用。
+运行期某条连接被丢弃（网络错误、响应帧损坏、心跳判死）后，后台补建循环每秒检查池容量并自动补齐；`Disconnect` 关闭池内全部连接并停止补建。`CurrentAddress` 返回池内首条连接实际连通的服务器地址。各查询方法保持原有签名，可安全并发调用。
+
+### 行情订阅
+
+`Client.Subscriber()` 返回的 `Subscriber` 通用订阅工厂，对任意数据源建立"轮询 diff 推送"订阅：内部按间隔轮询拉取快照（复用各查询方法请求协议，无需新增推送协议），快照变化时回调处理函数。首次订阅立即推送一次建立基线，此后仅在变化时推送；处理函数返回 `false` 或调用返回的取消函数即停止订阅。
+
+```go
+sub := client.Subscriber()
+
+// 报价订阅：复用 GetSecurityQuotes 拉取链路。
+cancel, err := sub.Subscribe(
+	gotdx.SubscribeSource[*proto.GetSecurityQuotesReply]{
+		Fetch: func() (*proto.GetSecurityQuotesReply, error) {
+			return client.GetSecurityQuotes([]uint8{types.MarketSH}, []string{"600000"})
+		},
+	},
+	3*time.Second, // 轮询间隔，非正数使用默认 3 秒
+	func(q *proto.GetSecurityQuotesReply) bool {
+		log.Printf("%s 最新价 %.2f", q.List[0].Code, q.List[0].Close)
+		return true // 返回 false 取消订阅
+	},
+)
+if err != nil {
+	log.Fatal(err)
+}
+defer cancel()
+```
+
+K 线、分时、逐笔、指数、扩展市场等所有查询能力用同一套订阅语义接入：`SubscribeSource[T]` 中 `Fetch` 提供拉取函数（任意查询方法），`Changed` 可选自定义变化判定（如"仅新 K 线出现时推送""价格变动超过阈值才推送"），省略时默认深比较：
+
+```go
+sub.Subscribe(
+	gotdx.SubscribeSource[*proto.GetSecurityBarsReply]{
+		Fetch: func() (*proto.GetSecurityBarsReply, error) {
+			return client.GetKLine(0, types.MarketSH, "600000", 0, 10, 0, 0)
+		},
+		Changed: func(old, new *proto.GetSecurityBarsReply) bool {
+			return len(new.List) > len(old.List) // 仅新 K 线出现时推送
+		},
+	},
+	5*time.Second,
+	func(k *proto.GetSecurityBarsReply) bool {
+		log.Printf("最新收盘 %.2f", k.List[0].Close)
+		return true
+	},
+)
+```
+
+工厂每个订阅独立轮询循环：拉取失败自动跳过本轮、下轮重试，订阅不中断；返回的取消函数、处理函数返回 `false` 或客户端 `Disconnect` 均会停止订阅。
 
 <a id="capabilities"></a>
 ## 能力概览

@@ -93,6 +93,15 @@ func fakeTDXServer(t *testing.T, oversizedSize uint16) (addr string, stop func()
 							// 正常响应：10 字节负载（2 字节返回条数加 2 个语义待确认的 `uint32` 字段）。
 							conn.Write(append(fakeRespHeader(seq, method, 10), make([]byte, 10)...))
 						}
+					case proto.KMSG_SECURITYQUOTES:
+						// 固定报价响应：1 条全零行情（市场 0、代码 "000000"），
+						// 字段全零时各变长价格字段占 1 字节，便于订阅测试构造。
+						body := make([]byte, 60) // 2 保留 + 2 数量 + 56 条目
+						body[2] = 1              // 返回 1 条
+						for i := 0; i < 6; i++ {
+							body[5+i] = '0' // 条目偏移 4 起：市场 1 + 代码 6 字节
+						}
+						conn.Write(append(fakeRespHeader(seq, method, uint16(len(body))), body...))
 					default:
 						conn.Write(fakeRespHeader(seq, method, 0))
 					}
