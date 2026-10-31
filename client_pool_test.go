@@ -283,3 +283,74 @@ func TestRebalanceKeepsFastestPool(t *testing.T) {
 		}
 	}
 }
+
+// TestHeartbeatKeepsHealthyConn 验证正常连接的应用层心跳通过，连接保留在池内。
+func TestHeartbeatKeepsHealthyConn(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(2))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	// 建池同步只建 1 条，等待补建循环补满后心跳才对整池生效。
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		c.mu.Lock()
+		filled := len(c.pool)
+		c.mu.Unlock()
+		if filled == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pool was not refilled in time")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	c.heartbeatPool()
+
+	c.mu.Lock()
+	got := len(c.pool)
+	c.mu.Unlock()
+	if got != 2 {
+		t.Fatalf("healthy conns must survive heartbeat, pool got %d", got)
+	}
+}
+
+// TestHeartbeatDiscardsStaleConn 验证应用层心跳会丢弃僵死连接：连接 TCP 被对端
+// 关闭后心跳失败，该连接从池内移除。
+func TestHeartbeatDiscardsStaleConn(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(2))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	// 模拟僵死连接：关闭池内第一条连接的底层 TCP（应用层对此不知情）。
+	c.mu.Lock()
+	pc := c.pool[0]
+	c.mu.Unlock()
+	_ = pc.conn.Close()
+
+	// 心跳应发现该连接不可读写并丢弃。
+	c.heartbeatPool()
+
+	c.mu.Lock()
+	stillIn := false
+	for _, p := range c.pool {
+		if p == pc {
+			stillIn = true
+			break
+		}
+	}
+	c.mu.Unlock()
+	if stillIn {
+		t.Fatal("stale conn still in pool after heartbeat")
+	}
+}
