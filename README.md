@@ -134,6 +134,7 @@ client := gotdx.New(
 ## 项目结构
 
 - `proto/`: 各协议的请求/响应序列化与反序列化实现。
+- `cache/`: 基于 Redis 的缓存层基座（机制底座），按数据形态分两类存储：时间序列能力（K 线/分时/逐笔/竞价/MAC 时序）采用「ZSet 闭合历史 + String 实时」双结构并走 Lua 原子流转，ZSet 永久保存不自动淘汰；行情快照/列表/服务器/公司资料/文件等采用整段键值缓存；两类均含空标记防穿透、singleflight+分布式锁防击穿、熔断防雪崩，详见「缓存层」一节。
 - `client_quote.go`: 主行情底层接口。
 - `client_exquote.go`: 扩展市场底层接口。
 - `client_mac.go`: MAC 协议接口。
@@ -142,6 +143,64 @@ client := gotdx.New(
 - `examples/`: 可直接运行的示例。
 
 <a id="examples"></a>
+## 缓存层
+
+`cache` 包为 gotdx 提供基于 Redis 的缓存层**基座**：当前已实现存储机制与防护底座，
+对外查询能力（与 `gotdx.Client` 同名方法）在此基座上逐能力族构建，每个能力族一个
+源文件。所有机制并发安全。
+
+**时间序列能力（K 线、分时、逐笔、历史成交、竞价、MAC 时序等）**——凡属
+「最新一根未闭合 + 历史已闭合」形态的数据，采用 **ZSet 闭合历史 + String 实时**
+双结构存储：
+
+- 未闭合的最新一根存入普通 String（键为 ZSet 键加 `:live` 后缀），值为
+  「分数|更新时刻|base64 数据」三段拼接文本；tick 到达时由单条 Lua 脚本原子完成
+  「同根覆盖 / 前一根闭合流转进 ZSet / 续写 TTL」，TTL 仅作行情源断流兜底。
+- 已闭合的根按 score 存入 ZSet：score 统一为 Unix 毫秒（时间戳换算），member 为
+  单根应答 MessagePack 编码后再 base64 的文本，与实时槽编码一致、可被 Lua 原样搬移。
+- **ZSet 永久保存，不自动淘汰**（无后台任务、无 `Stop()`）；如需清理只能外部显式
+  `DEL` 或 `ZREMRANGEBYSCORE`。
+- 历史修正写入由 Lua 脚本原子完成：先按 score 删除同 score 旧成员再 ZADD（修正覆盖
+  而不堆积）；逐笔、成交等「同分可多笔共存」的族以追加写入绕过同分唯一约束。
+- 查询用一条 pipeline 同时完成空标记检查、实时槽读取与 ZSet 最新段读取（单次往返），
+  合并后按分数降序（时间从新到旧）排序，按 start/count 窗口切片返回；实时槽超过
+  刷新间隔未更新时拉一次最新一根做 tick 更新（同样受熔断保护）。
+
+**普通键值能力（行情快照、证券列表、榜单、服务器信息、公司资料、文件等）**——整段
+应答 MessagePack 编码后存入 Redis String（信封带版本号便于格式迁移），附带空标记；
+单条应答超过 4 MiB 只回源返回、不写缓存。
+
+**防护机制（两类通用）**：
+
+- 穿透防护：回源失败或结果为空时写入短 TTL 空标记（默认 30 秒），存活期内不再回源，
+  防恶意穿透打垮行情源；失败与空结果用不同标记值区分。
+- 击穿防护：同进程 `singleflight` 合并同键并发；跨进程抢 Redis 分布式锁
+  （SET NX EX，5 秒超时防死锁），持锁方二次确认后才回源，以 Lua 校验 token 解锁；
+  抢锁失败直连回源兜底，同键并发只打一次行情服务器。
+- 熔断防护：回源连续失败达到阈值（默认 5 次）打开熔断，冷却期内（默认 10 秒）未命中
+  查询快速失败返回 `ErrCircuitOpen`，不再打行情源；冷却期满放行单个试探请求，成功即
+  关断、失败重新打开。
+- 降级：Redis 故障时自动退化为直连回源（查询、锁、熔断三层全部兜底），不因缓存层
+  故障阻断行情。
+
+```go
+import (
+    "github.com/bensema/gotdx/cache"
+    "github.com/redis/go-redis/v9"
+)
+
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+cached := cache.NewCacheClient(rdb) // 可传 cache.WithKeyPrefix、cache.WithEmptyTTL、
+                                    // cache.WithLockTimeout、cache.WithLiveTTL、
+                                    // cache.WithCircuitFailThreshold、cache.WithCircuitOpenTimeout
+// 非法选项值（阈值 0、负 TTL、空前缀）自动回退默认值。
+// 能力层在此基座上按族构建（每个能力族一个源文件，覆盖 gotdx 全部查询能力）；
+// 构建后调用方式与 gotdx.Client 同名方法一致，仅首位新增 context.Context。
+```
+
+基座文件：`client.go`（入口与配置）、`kv.go`（键值缓存机制）、`ts.go`（时序双结构
+机制）、`lua.go`（原子脚本）、`breaker.go`（回源熔断器）。
+
 ## 示例
 
 下面这些命令可以直接运行：
