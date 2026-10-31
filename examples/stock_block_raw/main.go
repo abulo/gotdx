@@ -4,10 +4,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 
+	"github.com/bensema/gotdx/cache"
 	"github.com/bensema/gotdx/examples/internal/exampleutil"
 	"github.com/bensema/gotdx/types"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -58,6 +62,20 @@ func main() {
 	for _, item := range grouped[:min(5, len(grouped))] {
 		log.Printf("grouped block=%s type=%d stocks=%d", item.BlockName, item.BlockType, item.StockCount)
 	}
+
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379", DB: 2})
+	cached := cache.NewCacheClient(rdb, client)
+	ctx := context.Background()
+	flatCache, err := cached.GetParsedBlockFile(ctx, types.BlockFileGN)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	for _, item := range flatCache[:min(10, len(flatCache))] {
+		log.Printf("flat block=%s type=%d code=%s", item.BlockName, item.BlockType, item.Code)
+	}
+	stats := cached.Stats() // 命中/回源/熔断拒绝/空标记命中 各计数
+	fmt.Printf("命中=%d 空标记命中=%d 回源=%d 回源失败=%d 熔断拒绝=%d\n",
+		stats.Hits, stats.EmptyHits, stats.Fetches, stats.SourceErrors, stats.CircuitRejects)
 }
 
 // min 返回整数 a 与 b 中较小的一个。

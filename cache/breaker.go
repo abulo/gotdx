@@ -104,13 +104,17 @@ func (b *circuitBreaker) afterFailure() {
 }
 
 // fetchGuarded 在熔断器保护下执行一次回源：熔断拒绝时直接返回
-// ErrCircuitOpen（不执行 fn）；否则执行 fn 并按结果更新熔断计数。
+// ErrCircuitOpen（不执行 fn）并计入熔断拒绝；否则执行 fn、计入回源次数，
+// 并按结果更新熔断计数与回源失败计数。
 func (c *CacheClient) fetchGuarded(ctx context.Context, fn func(context.Context) error) error {
 	if !c.breaker.before() {
+		c.stats.circuitRejects.Add(1)
 		return ErrCircuitOpen
 	}
+	c.stats.fetches.Add(1)
 	err := fn(ctx)
 	if err != nil {
+		c.stats.sourceErrors.Add(1)
 		c.breaker.afterFailure()
 	} else {
 		c.breaker.afterSuccess()

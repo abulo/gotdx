@@ -53,8 +53,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sync/atomic"
 	"time"
 
+	"github.com/bensema/gotdx"
 	"github.com/redis/go-redis/v9"
 	"github.com/vmihailenco/msgpack/v5"
 	"golang.org/x/sync/singleflight"
@@ -92,6 +94,9 @@ var (
 	errTsMiss = errors.New("ts cache miss")
 	// errTsEmpty 表示时序缓存命中空标记。
 	errTsEmpty = errors.New("ts cache empty")
+	// errFetchFailed 表示锁回调内回源已失败（含熔断拒绝）：外层据此
+	// 直接透传，不再走直连兜底重复打行情源。
+	errFetchFailed = errors.New("fetch failed in lock")
 )
 
 // Options 为缓存层行为参数，未设置的项使用对应默认值。`Redis` 连接的
@@ -156,21 +161,63 @@ func WithCircuitOpenTimeout(timeout time.Duration) Option {
 	return func(o *Options) { o.CircuitOpenTimeout = timeout }
 }
 
-// CacheClient 为缓存层的对外入口：持有外部传入的 `Redis` 客户端、同进程
-// `singleflight` 合并器与回源熔断器。所有方法并发安全。
+// CacheClient 为缓存层的对外入口：持有外部传入的 `Redis` 客户端与行情源
+// `gotdx.Client`（能力层回源直接调用它）、同进程 `singleflight` 合并器、
+// 回源熔断器与运行时统计。所有方法并发安全。
 type CacheClient struct {
 	opt     *Options
 	rds     *redis.Client
+	cli     *gotdx.Client
 	group   singleflight.Group
 	breaker *circuitBreaker
+	stats   clientStats
 }
 
-// NewCacheClient 接收外部创建的 `redis.Client` 并按给定选项构建缓存层。
-// rds 不允许为 nil；选项为 nil 或未覆盖的字段使用默认值。实例无需显式
-// 关闭；传入的 `redis.Client` 由外部创建、外部负责关闭，本包不触碰它。
-func NewCacheClient(rds *redis.Client, opts ...Option) *CacheClient {
+// clientStats 为运行时统计的原子计数集合。
+type clientStats struct {
+	hits           atomic.Uint64 // 缓存命中次数（数据来自缓存）
+	emptyHits      atomic.Uint64 // 空标记命中次数（含失败标记与空结果标记）
+	fetches        atomic.Uint64 // 实际执行回源次数（成功与失败都计入）
+	sourceErrors   atomic.Uint64 // 回源失败次数
+	circuitRejects atomic.Uint64 // 熔断拒绝的回源次数
+}
+
+// Stats 为运行时统计快照，可据此观测缓存命中率与行情源健康度。
+type Stats struct {
+	// Hits 为缓存命中次数：查询结果直接来自缓存，未触碰行情源。
+	Hits uint64
+	// EmptyHits 为空标记命中次数：空标记存活期内不再回源（含失败标记
+	// 与确认无数据的空结果标记）。
+	EmptyHits uint64
+	// Fetches 为实际执行回源次数（成功与失败都计入）。
+	Fetches uint64
+	// SourceErrors 为回源失败次数。
+	SourceErrors uint64
+	// CircuitRejects 为熔断打开期间被拒绝的回源次数。
+	CircuitRejects uint64
+}
+
+// Stats 返回各项计数的当前快照；计数自实例创建起累计，不重置。
+func (c *CacheClient) Stats() Stats {
+	return Stats{
+		Hits:           c.stats.hits.Load(),
+		EmptyHits:      c.stats.emptyHits.Load(),
+		Fetches:        c.stats.fetches.Load(),
+		SourceErrors:   c.stats.sourceErrors.Load(),
+		CircuitRejects: c.stats.circuitRejects.Load(),
+	}
+}
+
+// NewCacheClient 接收外部创建的 `redis.Client` 与行情源 `gotdx.Client`，
+// 并按给定选项构建缓存层。rds 与 cli 均不允许为 nil；选项为 nil 或未覆盖
+// 的字段使用默认值（非法值回退默认）。实例无需显式关闭；传入的两个客户端
+// 由外部创建、外部负责关闭，本包不触碰它们。
+func NewCacheClient(rds *redis.Client, cli *gotdx.Client, opts ...Option) *CacheClient {
 	if rds == nil {
 		panic("cache: redis client is nil")
+	}
+	if cli == nil {
+		panic("cache: gotdx client is nil")
 	}
 	o := defaultOptions()
 	for _, opt := range opts {
@@ -201,6 +248,7 @@ func NewCacheClient(rds *redis.Client, opts ...Option) *CacheClient {
 	return &CacheClient{
 		opt:     o,
 		rds:     rds,
+		cli:     cli,
 		breaker: newCircuitBreaker(o.CircuitFailThreshold, o.CircuitOpenTimeout),
 	}
 }

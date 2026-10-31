@@ -182,8 +182,8 @@ defer client.Disconnect()
   刷新间隔未更新时拉一次最新一根做 tick 更新（同样受熔断保护）。
 
 **普通键值能力（行情快照、证券列表、榜单、服务器信息、公司资料、文件等）**——整段
-应答 MessagePack 编码后存入 Redis String（信封带版本号便于格式迁移），附带空标记；
-单条应答超过 4 MiB 只回源返回、不写缓存。
+应答 MessagePack 编码后存入 Redis String（信封带版本号便于格式迁移），附带空标记，
+不设体积上限。
 
 **防护机制（两类通用）**：
 
@@ -200,17 +200,24 @@ defer client.Disconnect()
 
 ```go
 import (
+    "github.com/bensema/gotdx"
     "github.com/bensema/gotdx/cache"
     "github.com/redis/go-redis/v9"
 )
 
+cli := gotdx.New()                    // 行情客户端，按需传 gotdx.WithTCPAddress 等选项，使用前 Connect
 rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-cached := cache.NewCacheClient(rdb) // 可传 cache.WithKeyPrefix、cache.WithEmptyTTL、
-                                    // cache.WithLockTimeout、cache.WithLiveTTL、
-                                    // cache.WithCircuitFailThreshold、cache.WithCircuitOpenTimeout
+cached := cache.NewCacheClient(rdb, cli) // 可传 cache.WithKeyPrefix、cache.WithEmptyTTL、
+                                         // cache.WithLockTimeout、cache.WithLiveTTL、
+                                         // cache.WithCircuitFailThreshold、cache.WithCircuitOpenTimeout
 // 非法选项值（阈值 0、负 TTL、空前缀）自动回退默认值。
 // 能力层在此基座上按族构建（每个能力族一个源文件，覆盖 gotdx 全部查询能力）；
 // 构建后调用方式与 gotdx.Client 同名方法一致，仅首位新增 context.Context。
+
+// 运行时观测：Stats() 返回命中/空标记命中/回源/回源失败/熔断拒绝五项原子计数快照，
+// 可据此计算缓存命中率并判断行情源健康度。
+stats := cached.Stats()
+fmt.Println(stats.Hits, stats.EmptyHits, stats.Fetches, stats.SourceErrors, stats.CircuitRejects)
 ```
 
 基座文件：`client.go`（入口与配置）、`kv.go`（键值缓存机制）、`ts.go`（时序双结构

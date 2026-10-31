@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -322,13 +323,16 @@ func (c *CacheClient) tsGet[T any](ctx context.Context, zkey string, start, coun
 	fetch func(context.Context) ([]T, []float64, bool, error)) ([]T, error) {
 	items, err := c.tsQuery(ctx, zkey, start, count, refresh, latest)
 	if err == nil {
+		c.stats.hits.Add(1)
 		return items, nil
 	}
 	if errors.Is(err, errTsEmpty) {
 		// 空结果标记命中：按空数据处理。
+		c.stats.emptyHits.Add(1)
 		return nil, nil
 	}
 	if errors.Is(err, ErrSourceFailed) {
+		c.stats.emptyHits.Add(1)
 		return nil, err
 	}
 	if !errors.Is(err, errTsMiss) {
@@ -353,12 +357,15 @@ func (c *CacheClient) tsGet[T any](ctx context.Context, zkey string, start, coun
 		lockErr := c.lock(ctx, c.tsLockKey(zkey), func() error {
 			// 二次确认：持锁期间可能已有其他进程补齐数据或写入空标记。
 			if got, qerr := c.tsQuery(ctx, zkey, start, count, refresh, latest); qerr == nil {
+				c.stats.hits.Add(1)
 				out = got
 				return nil
 			} else if errors.Is(qerr, errTsEmpty) {
 				// 空结果标记命中：按空数据处理，不再回源。
+				c.stats.emptyHits.Add(1)
 				return nil
 			} else if errors.Is(qerr, ErrSourceFailed) {
+				c.stats.emptyHits.Add(1)
 				return qerr
 			}
 			var batch []T
@@ -371,11 +378,12 @@ func (c *CacheClient) tsGet[T any](ctx context.Context, zkey string, start, coun
 			})
 			if gerr != nil {
 				// 熔断拒绝时不写失败标记（行情源暂不可用而非确认失败），
-				// 熔断恢复后重新回源。
+				// 熔断恢复后重新回源；回源失败统一包装为哨兵错误，外层
+				// 据此不再重复直连。
 				if !errors.Is(gerr, ErrCircuitOpen) {
 					_ = c.tsMarkEmpty(ctx, zkey, true)
 				}
-				return gerr
+				return fmt.Errorf("%w: %v", errFetchFailed, gerr)
 			}
 			if empty {
 				_ = c.tsMarkEmpty(ctx, zkey, false)
@@ -397,8 +405,8 @@ func (c *CacheClient) tsGet[T any](ctx context.Context, zkey string, start, coun
 			out = batch[start:end]
 			return nil
 		})
-		if lockErr != nil && !errors.Is(lockErr, errLockNotAcquired) {
-			// 锁不可用（如 `Redis` 故障）：直连回源兜底，不写缓存。
+		if lockErr != nil && !errors.Is(lockErr, errLockNotAcquired) && !errors.Is(lockErr, errFetchFailed) {
+			// 锁机制故障（如 `Redis` 故障）：直连回源兜底，不写缓存。
 			var batch []T
 			gerr := c.fetchGuarded(ctx, func(ctx context.Context) error {
 				var e error
@@ -424,6 +432,11 @@ func (c *CacheClient) tsGet[T any](ctx context.Context, zkey string, start, coun
 			}
 			tsReverse(batch)
 			return batch, nil
+		}
+		// 锁内回源已失败（含熔断拒绝）：已写失败标记，透传错误，不再
+		// 重复打行情源。
+		if errors.Is(lockErr, errFetchFailed) {
+			return nil, lockErr
 		}
 		return out, nil
 	})

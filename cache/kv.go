@@ -8,12 +8,9 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
-
-// kvMaxReply 为单条应答可写入缓存的最大体积（字节）。超出上限的应答
-// 只回源返回、不写缓存，避免撑爆 `Redis`。
-const kvMaxReply = 4 << 20 // 4 MiB
 
 // kvKey 返回普通键值语义键对应的实际 `Redis` 键（带 :kv: 类型段，避免
 // 与时间序列键冲突）。
@@ -53,6 +50,7 @@ func (c *CacheClient) kvGet[T any](ctx context.Context, key string, ttl time.Dur
 
 	// 空标记检查：命中即不再回源。
 	if emptyCmd.Err() == nil {
+		c.stats.emptyHits.Add(1)
 		s, _ := emptyCmd.Result()
 		if s == emptyFlagFail {
 			var zero T
@@ -66,6 +64,7 @@ func (c *CacheClient) kvGet[T any](ctx context.Context, key string, ttl time.Dur
 		raw, _ := valCmd.Result()
 		env, derr := decodeReplyEnvelope([]byte(raw))
 		if derr == nil {
+			c.stats.hits.Add(1)
 			return msgpackDecode[T](env.Data)
 		}
 	}
@@ -84,12 +83,14 @@ func (c *CacheClient) kvGet[T any](ctx context.Context, key string, ttl time.Dur
 				raw, _ := valCmd.Result()
 				if env, derr := decodeReplyEnvelope([]byte(raw)); derr == nil {
 					if val, gerr := msgpackDecode[T](env.Data); gerr == nil {
+						c.stats.hits.Add(1)
 						out = val
 						return nil
 					}
 				}
 			}
 			if emptyCmd.Err() == nil {
+				c.stats.emptyHits.Add(1)
 				s, _ := emptyCmd.Result()
 				if s == emptyFlagFail {
 					return ErrSourceFailed
@@ -105,11 +106,12 @@ func (c *CacheClient) kvGet[T any](ctx context.Context, key string, ttl time.Dur
 			})
 			if gerr != nil {
 				// 熔断拒绝时不写失败标记（行情源暂不可用而非确认失败），
-				// 熔断恢复后重新回源。
+				// 熔断恢复后重新回源；回源失败统一包装为哨兵错误，外层
+				// 据此不再重复直连。
 				if !errors.Is(gerr, ErrCircuitOpen) {
 					_ = c.rds.Set(ctx, c.kvEmptyKey(key), emptyFlagFail, c.opt.EmptyTTL).Err()
 				}
-				return gerr
+				return fmt.Errorf("%w: %v", errFetchFailed, gerr)
 			}
 			v, empty := fv, fempty
 			if empty {
@@ -118,8 +120,7 @@ func (c *CacheClient) kvGet[T any](ctx context.Context, key string, ttl time.Dur
 				return nil
 			}
 			data, eerr := msgpackEncode(v)
-			// 超体积上限的应答只回源返回，不写缓存，避免撑爆 `Redis`。
-			if eerr == nil && len(data) <= kvMaxReply {
+			if eerr == nil {
 				env := &replyEnvelope{Version: 1, Data: data}
 				if raw, eerr2 := encodeReplyEnvelope(env); eerr2 == nil {
 					_ = c.rds.Set(ctx, c.kvKey(key), raw, ttl).Err()
@@ -128,8 +129,8 @@ func (c *CacheClient) kvGet[T any](ctx context.Context, key string, ttl time.Dur
 			out = v
 			return nil
 		})
-		if lockErr != nil && !errors.Is(lockErr, errLockNotAcquired) {
-			// 锁不可用（如 `Redis` 故障）：直连回源兜底，不写缓存。
+		if lockErr != nil && !errors.Is(lockErr, errLockNotAcquired) && !errors.Is(lockErr, errFetchFailed) {
+			// 锁机制故障（如 `Redis` 故障）：直连回源兜底，不写缓存。
 			var fv T
 			gerr := c.fetchGuarded(ctx, func(ctx context.Context) error {
 				var e error
@@ -155,6 +156,12 @@ func (c *CacheClient) kvGet[T any](ctx context.Context, key string, ttl time.Dur
 				return zero, gerr
 			}
 			return fv, nil
+		}
+		// 锁内回源已失败（含熔断拒绝）：已写失败标记，透传错误，不再
+		// 重复打行情源。
+		if errors.Is(lockErr, errFetchFailed) {
+			var zero T
+			return zero, lockErr
 		}
 		return out, nil
 	})

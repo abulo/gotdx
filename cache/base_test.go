@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/bensema/gotdx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -15,7 +16,7 @@ import (
 func TestNewCacheClientNormalizesOptions(t *testing.T) {
 	rds := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}) // 不连接，仅构造
 	defer func() { _ = rds.Close() }()
-	c := NewCacheClient(rds,
+	c := NewCacheClient(rds, gotdx.New(),
 		WithKeyPrefix(""),
 		WithEmptyTTL(0),
 		WithLockTimeout(-time.Second),
@@ -42,7 +43,7 @@ func TestNewCacheClientNormalizesOptions(t *testing.T) {
 // 即使刷新条件满足也不调用 latest 回调打行情源，返回已有缓存数据。
 func TestTsQueryRefreshRespectsCircuit(t *testing.T) {
 	mr := miniredis.RunT(t)
-	c := NewCacheClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}),
+	c := NewCacheClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), gotdx.New(),
 		WithCircuitFailThreshold(1),
 		WithCircuitOpenTimeout(time.Hour))
 	defer func() { _ = c.rds.Close() }()
@@ -71,7 +72,7 @@ func TestTsQueryRefreshRespectsCircuit(t *testing.T) {
 // TestTsGetEmptyMarkerSkipsSource 验证空结果标记命中时不回源、返回空数据。
 func TestTsGetEmptyMarkerSkipsSource(t *testing.T) {
 	mr := miniredis.RunT(t)
-	c := NewCacheClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	c := NewCacheClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), gotdx.New())
 	defer func() { _ = c.rds.Close() }()
 
 	zkey := "k:000001:min"
@@ -99,7 +100,7 @@ func TestTsGetEmptyMarkerSkipsSource(t *testing.T) {
 // 且不回源。
 func TestTsGetFailureMarkerPropagates(t *testing.T) {
 	mr := miniredis.RunT(t)
-	c := NewCacheClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	c := NewCacheClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), gotdx.New())
 	defer func() { _ = c.rds.Close() }()
 
 	zkey := "k:000001:min"
