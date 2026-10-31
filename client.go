@@ -57,16 +57,18 @@ func NewMACEx(opts ...Option) *Client {
 	return newClientWithOptions(applyOptions(opts...), clientModeMacEx)
 }
 
-// Client 是通达信行情协议客户端，封装 TCP 连接、握手、协议收发以及主站、扩展站、MAC 站的高层接口。
+// Client 是通达信行情协议客户端，封装 TCP 连接池、握手、协议收发以及主站、扩展站、MAC 站的高层接口。
 //
-// Client 须由 `New`、`NewEx`、`NewMAC`、`NewMACEx` 构造，零值不可用；各方法可并发调用，同一连接上的
-// 请求由客户端内部串行化，调用方无需自行加锁。
+// Client 须由 `New`、`NewEx`、`NewMAC`、`NewMACEx` 构造，零值不可用；各方法可并发调用，请求
+// 按轮询分散到池内各连接：连接之间并行、单连接上的请求由该连接内部串行化，调用方无需自行加锁。
 type Client struct {
-	conn                net.Conn
-	opt                 *Options
-	complete            chan bool
-	sending             chan bool
-	mu                  sync.Mutex
+	opt                 *Options      // 深拷贝后的连接配置
+	pool                []*pooledConn // 连接池：每条连接独立串行锁，连接之间并行
+	mu                  sync.Mutex    // 池管理锁：保护借还、补建、关闭与池状态
+	closed              bool          // 池已关闭标记，关闭后拒绝借出
+	next                int           // 轮询游标：借出连接时按此下标取池内连接并自增
+	done                chan struct{} // 补建循环停止信号，`Disconnect` 时关闭
+	refill              sync.Once     // 补建循环只启动一次
 	mode                clientMode
 	main                *Client
 	ex                  *Client
@@ -74,13 +76,26 @@ type Client struct {
 	decimalPointsLoaded map[uint8]bool
 }
 
-// CurrentAddress 返回当前配置（或最近连接成功）的服务器 `host:port` 地址。
+// pooledConn 为池内一条 TCP 连接：自带串行锁，保证该连接上的请求严格
+// 先写后读、帧边界不被并发破坏。
+type pooledConn struct {
+	conn net.Conn
+	mu   sync.Mutex // 该连接串行锁
+	addr string     // 实际连通的 `host:port` 地址
+}
+
+// CurrentAddress 返回当前池内首条连接实际连通的服务器 `host:port` 地址。
 //
-// 本方法无业务入参；客户端指针或内部选项为空时返回空字符串；已拨号成功后返回实际连通的地址，
-// 未拨号时返回配置的单点地址。
+// 本方法无业务入参；客户端指针或内部选项为空时返回空字符串；已建立连接池时返回首条连接的
+// 实际地址，未拨号时返回配置的单点地址。
 func (client *Client) CurrentAddress() string {
 	if client == nil || client.opt == nil {
 		return ""
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.pool) > 0 {
+		return client.pool[0].addr
 	}
 	return client.opt.TCPAddress
 }
@@ -113,10 +128,12 @@ func (client *Client) FastestHost() (HostProbeResult, error) {
 // MAC 扩展站，不同模式把对应站点的单点地址与地址池切换为后续拨号使用的默认目标。
 func newClientWithOptions(opt *Options, mode clientMode) *Client {
 	client := &Client{
-		opt:      cloneOptions(opt),
-		sending:  make(chan bool, 1),
-		complete: make(chan bool, 1),
-		mode:     mode,
+		opt:  cloneOptions(opt),
+		mode: mode,
+	}
+	// 连接池大小非正数时回退默认，避免零值构造出不可用池。
+	if client.opt.PoolSize <= 0 {
+		client.opt.PoolSize = _defaultPoolSize
 	}
 
 	// 扩展站 / MAC 站点模式：用对应站点的地址与地址池覆盖主站连接配置。
@@ -152,45 +169,6 @@ func cloneOptions(opt *Options) *Options {
 	return &clone
 }
 
-// connect 按连接顺序逐个尝试地址，任一地址建立 TCP 连接即返回 `nil`。
-//
-// 候选地址为空时返回"未配置 TCP 地址"错误；全部地址拨号失败时返回最后一次拨号错误。
-func (client *Client) connect() error {
-	addresses := client.connectionOrder()
-	if len(addresses) == 0 {
-		return errors.New("no tcp address configured")
-	}
-
-	var lastErr error
-	for _, address := range addresses {
-		// 单个地址拨号失败不中断流程，记录错误后继续尝试下一个备选地址。
-		if err := client.connectToAddress(address); err != nil {
-			lastErr = err
-			continue
-		}
-		return nil
-	}
-	// 兜底错误：循环中未产生具体错误（理论上不会走到该分支）。
-	if lastErr == nil {
-		lastErr = errors.New("no available tcp address")
-	}
-	return lastErr
-}
-
-// connectToAddress 使用当前超时拨号单个地址。
-//
-// 参数 `address` 为 `host:port` 形式地址；拨号失败返回底层 `net.DialTimeout` 错误，成功后把实际
-// 连通的地址写回选项，供 `CurrentAddress` 回读。
-func (client *Client) connectToAddress(address string) error {
-	conn, err := net.DialTimeout("tcp", address, client.timeout())
-	if err != nil {
-		return err
-	}
-	client.conn = conn
-	client.opt.TCPAddress = address
-	return nil
-}
-
 // addresses 汇总单点地址与地址池，返回 `host:port` 地址序列；单点地址排在前面优先尝试，地址池
 // 按配置顺序跟随其后。
 func (client *Client) addresses() []string {
@@ -202,29 +180,16 @@ func (client *Client) addresses() []string {
 	return addresses
 }
 
-// connectionOrder 决定本次拨号的地址顺序。
+// probeOrder 并发测速并按可达性、延迟排序地址：可达且延迟低的地址排前，不可达与重复
+// 地址剔除，测速结果未覆盖的原始地址补在末尾避免候选丢失；测速全部失败时按原始顺序返回。
 //
-// 未开启测速时保持配置原顺序；开启时先按可达性与延迟排序，不可达与重复地址去重后，再把测速未
-// 覆盖的原始地址补在末尾。客户端或选项为空、候选集合为空时返回 `nil`；测速全部失败时回退到原始
-// 地址顺序。
-func (client *Client) connectionOrder() []string {
-	if client == nil || client.opt == nil {
-		return nil
-	}
-	addresses := client.addresses()
-	if len(addresses) == 0 {
-		return nil
-	}
-	if !client.opt.AutoSelectFastest {
-		return addresses
-	}
-
-	// 测速全部失败时回退到原始地址顺序，避免直接中断连接。
-	results := ProbeAddresses(addresses, client.timeout())
+// 参数 `addresses` 为待排序的 `host:port` 地址；`timeout` 为单次拨号探测超时，非正数时
+// 由 `ProbeAddresses` 回退默认超时。
+func probeOrder(addresses []string, timeout time.Duration) []string {
+	results := ProbeAddresses(addresses, timeout)
 	if len(results) == 0 {
 		return addresses
 	}
-
 	ordered := make([]string, 0, len(addresses))
 	seen := make(map[string]struct{}, len(addresses))
 	for _, result := range results {
@@ -261,81 +226,259 @@ func (client *Client) timeout() time.Duration {
 	return timeout
 }
 
-// closeCurrentConn 关闭并清空当前连接；关闭错误忽略，连接置空后便于后续重建。
-func (client *Client) closeCurrentConn() {
-	if client.conn != nil {
-		_ = client.conn.Close()
-		client.conn = nil
+// buildPoolConn 拨号指定地址并在该连接上完成当前模式握手，返回可入池连接与其握手应答。
+//
+// 参数 `address` 为 `host:port` 形式地址；拨号或握手失败时关闭连接并返回错误。主站与扩展站
+// 各自完成对应握手协议，MAC 站拨号即视为连接成功、应答为 `nil`。
+func (client *Client) buildPoolConn(address string) (*pooledConn, any, error) {
+	conn, err := net.DialTimeout("tcp", address, client.timeout())
+	if err != nil {
+		return nil, nil, err
+	}
+	pc := &pooledConn{conn: conn, addr: address}
+	// 握手按连接串行锁执行（此时池未并发，锁仅为形态一致）。
+	pc.mu.Lock()
+	reply, err := client.handshakeOn(pc)
+	pc.mu.Unlock()
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	return pc, reply, nil
+}
+
+// handshakeOn 在指定连接上执行当前模式对应的握手协议，返回解析后的握手应答。
+//
+// 主站模式发送 `Hello1` 请求并解析应答，扩展站模式发送 `ExLogin` 请求并解析应答；
+// MAC 主站与 MAC 扩展站无握手协议，直接返回 `nil`。握手失败时返回对应错误。
+func (client *Client) handshakeOn(pc *pooledConn) (any, error) {
+	switch client.mode {
+	case clientModeEx:
+		obj := proto.NewExLogin()
+		header, payload, err := client.exchange(pc.conn, obj)
+		if err != nil {
+			return nil, err
+		}
+		if err := obj.ParseResponse(header, payload); err != nil {
+			return nil, err
+		}
+		return obj.Response(), nil
+	case clientModeMacMain, clientModeMacEx:
+		return nil, nil
+	default:
+		obj := proto.NewHello1()
+		header, payload, err := client.exchange(pc.conn, obj)
+		if err != nil {
+			return nil, err
+		}
+		if err := obj.ParseResponse(header, payload); err != nil {
+			return nil, err
+		}
+		return obj.Response(), nil
 	}
 }
 
-// connectWithHandshake 逐个地址拨号并执行握手回调。
-//
-// 参数 `handshake` 为在已拨号连接上执行的握手函数，其返回 `nil` 表示握手成功；握手失败说明该
-// 连接帧状态不可信，立即关闭后切换下一个地址重试。候选地址为空返回"未配置 TCP 地址"错误；全部
-// 地址拨号或握手失败时返回最后一次错误。
-func (client *Client) connectWithHandshake(handshake func() error) error {
-	addresses := client.connectionOrder()
-	if len(addresses) == 0 {
-		return errors.New("no tcp address configured")
-	}
-
-	var lastErr error
-	for _, address := range addresses {
-		if err := client.connectToAddress(address); err != nil {
-			lastErr = err
-			continue
-		}
-		if err := handshake(); err == nil {
-			return nil
-		} else {
-			// 握手失败的连接帧状态不可信，关闭后再尝试下一个地址。
-			lastErr = err
-			client.closeCurrentConn()
+// removeAddress 从地址切片中剔除指定地址，返回新切片；被剔除地址可能为
+// 重复项，全部剔除后剩余切片可为空。
+func removeAddress(addresses []string, target string) []string {
+	out := make([]string, 0, len(addresses))
+	for _, addr := range addresses {
+		if addr != target {
+			out = append(out, addr)
 		}
 	}
-	if lastErr == nil {
-		lastErr = errors.New("no available tcp address")
-	}
-	return lastErr
+	return out
 }
 
-// exchange 完成一次请求-响应收发：编码请求、带超时写出发送、按帧读取响应头与负载，压缩帧按需
-// 以 `zlib` 解压。
+// acquire 从池内借出一条连接（轮询游标递增），调用方随后须持该连接串行锁执行请求。
 //
-// 参数 `builder` 负责协议请求的字节编码；返回的 `respHeader` 为解码后的响应头，`payload`
-// 为解压后的明文负载。尚未建立连接、请求编码失败、写重试超限、帧头或负载读取失败、负载长度超过
-// `MessageMaxBytes`、解压失败等任一环节出错都会返回错误，并丢弃当前连接，避免残留字节破坏后续
-// 帧边界。
-func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.RespHeader, payload []byte, err error) {
-	// 未建立连接时直接报错，避免对空连接执行读写。
-	if client.conn == nil {
-		return nil, nil, errors.New("connection is nil")
+// 池已关闭或池内暂无连接（未连接或连接全部被丢弃待补建）时返回"无可用连接"错误。
+func (client *Client) acquire() (*pooledConn, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.closed || len(client.pool) == 0 {
+		return nil, errors.New("no available connection")
+	}
+	idx := client.next % len(client.pool)
+	client.next++
+	return client.pool[idx], nil
+}
+
+// discard 关闭并移出池内指定连接；关闭错误忽略。运行期断连由此路径清理，
+// 后续由补建循环补齐池容量。
+func (client *Client) discard(pc *pooledConn) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	_ = pc.conn.Close()
+	for i, p := range client.pool {
+		if p == pc {
+			client.pool = append(client.pool[:i], client.pool[i+1:]...)
+			break
+		}
+	}
+}
+
+// refillLoop 按固定间隔触发补建，每分钟额外触发一次最快服务器重平衡，
+// 收到停止信号（`Disconnect` 关闭 `done`）时退出。
+func (client *Client) refillLoop() {
+	refillTicker := time.NewTicker(time.Second)
+	rebalanceTicker := time.NewTicker(time.Minute)
+	defer refillTicker.Stop()
+	defer rebalanceTicker.Stop()
+	for {
+		select {
+		case <-client.done:
+			return
+		case <-refillTicker.C:
+			client.refillPool()
+		case <-rebalanceTicker.C:
+			client.rebalancePool()
+		}
+	}
+}
+
+// rebalancePool 每分钟对候选地址重新测速一次，把连接池切换到当前最快的服务器。
+//
+// 先并发探活并按可达性、延迟排序（探活超时限制 5 秒），取首个可达地址为最快目标；
+// 池内连接已全部指向该地址时不作调整。否则并发预建 `PoolSize` 条指向最快地址的连接，
+// 全部失败保持现状；至少建成一条则先入池再关闭旧连接（先建后删，切换期间不出现空窗），
+// 未建满的余量由补建循环继续补齐。
+func (client *Client) rebalancePool() {
+	// 探活与拨号均为网络操作，在锁外执行，避免阻塞其他调用方借还连接。
+	probeTimeout := min(client.timeout(), 5*time.Second)
+	ordered := probeOrder(client.addresses(), probeTimeout)
+	if len(ordered) == 0 {
+		return
+	}
+	fastest := ordered[0]
+
+	client.mu.Lock()
+	if client.closed {
+		client.mu.Unlock()
+		return
+	}
+	// 池内已全部指向最快地址时无需切换。
+	allFastest := len(client.pool) > 0
+	for _, pc := range client.pool {
+		if pc.addr != fastest {
+			allFastest = false
+			break
+		}
+	}
+	if allFastest {
+		client.mu.Unlock()
+		return
+	}
+	client.mu.Unlock()
+
+	// 并发预建指向最快地址的连接，单条失败不影响其余，整体耗时由最慢一次拨号决定。
+	poolSize := client.opt.PoolSize
+	var (
+		newMu    sync.Mutex
+		newConns = make([]*pooledConn, 0, poolSize)
+		wg       sync.WaitGroup
+	)
+	for i := 0; i < poolSize; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pc, _, err := client.buildPoolConn(fastest)
+			if err != nil {
+				return
+			}
+			newMu.Lock()
+			newConns = append(newConns, pc)
+			newMu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if len(newConns) == 0 {
+		// 最快地址全部拨号失败（瞬时不可达），保持现有连接不动。
+		return
 	}
 
+	client.mu.Lock()
+	if client.closed {
+		client.mu.Unlock()
+		for _, pc := range newConns {
+			_ = pc.conn.Close()
+		}
+		return
+	}
+	// 先建后删：新连接入池后再关闭旧连接，切换期间池始终可借出。
+	old := client.pool
+	client.pool = newConns
+	client.mu.Unlock()
+	for _, pc := range old {
+		_ = pc.conn.Close()
+	}
+}
+
+// refillPool 补建一条缺失连接：先快速判断是否需要补建，需要时在锁外拨号与
+// 握手（网络操作不阻塞借还），成功后加锁入池；池已关闭或已满时关闭多余连接。
+func (client *Client) refillPool() {
+	client.mu.Lock()
+	if client.closed || len(client.pool) >= client.opt.PoolSize {
+		client.mu.Unlock()
+		return
+	}
+	// 池内还有可用连接时复用其地址补建，避免每轮重新测速。
+	known := ""
+	if len(client.pool) > 0 {
+		known = client.pool[0].addr
+	}
+	client.mu.Unlock()
+
+	// 测速与拨号均为网络操作，在锁外执行，避免阻塞其他调用方借还连接。
+	var address string
+	if known != "" {
+		address = known
+	} else {
+		// 池完全为空（初始建池失败或全部断连）：探活排序后取首个候选。
+		probeTimeout := min(client.timeout(), 5*time.Second)
+		ordered := probeOrder(client.addresses(), probeTimeout)
+		if len(ordered) == 0 {
+			return
+		}
+		address = ordered[0]
+	}
+	pc, _, err := client.buildPoolConn(address)
+	if err != nil {
+		// 单次补建失败不重试，等待下一轮；失败地址可能为瞬时不可达。
+		return
+	}
+	client.mu.Lock()
+	if !client.closed && len(client.pool) < client.opt.PoolSize {
+		client.pool = append(client.pool, pc)
+	} else {
+		_ = pc.conn.Close()
+	}
+	client.mu.Unlock()
+}
+
+// exchange 在指定连接上完成一次请求-响应收发：编码请求、带超时写出发送、按帧读取响应头与负载，
+// 压缩帧按需以 `zlib` 解压。
+//
+// 参数 `conn` 为执行收发的已连接 TCP 连接；参数 `builder` 负责协议请求的字节编码；返回的
+// `respHeader` 为解码后的响应头，`payload` 为解压后的明文负载。请求编码失败、写重试超限、帧头或
+// 负载读取失败、负载长度超过 `MessageMaxBytes`、解压失败等任一环节出错都会返回错误；连接字节流
+// 已无法保证帧边界，调用方（`execute`）须丢弃该连接，避免残留字节破坏后续帧。
+func (client *Client) exchange(conn net.Conn, builder proto.RequestBuilder) (respHeader *proto.RespHeader, payload []byte, err error) {
 	sendData, err := builder.BuildRequest()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// 写读任一环节失败后，连接上的字节流无法保证仍处于帧边界，
-	// 必须丢弃连接，避免残留字节被后续请求误读为响应头。
-	defer func() {
-		if err != nil {
-			client.closeCurrentConn()
-		}
-	}()
-
 	// 为本次收发设置整体截止时间，结束后清空超时以免影响后续操作。
-	_ = client.conn.SetDeadline(time.Now().Add(client.timeout()))
+	_ = conn.SetDeadline(time.Now().Add(client.timeout()))
 	defer func() {
-		_ = client.conn.SetDeadline(time.Time{})
+		_ = conn.SetDeadline(time.Time{})
 	}()
 
 	retryTimes := 0
 
 	for {
-		n, err := client.conn.Write(sendData)
+		n, err := conn.Write(sendData)
 		// 发送不完整时按 `MaxRetryTimes` 重试；超过重试次数或写入出错则放弃本次请求。
 		if n < len(sendData) {
 			retryTimes++
@@ -354,7 +497,7 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 
 	// 按固定帧长读取响应头，网络不足一帧时 `io.ReadFull` 会等待至凑满或报错。
 	headerBytes := make([]byte, proto.MessageHeaderBytes)
-	_, err = io.ReadFull(client.conn, headerBytes)
+	_, err = io.ReadFull(conn, headerBytes)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -373,7 +516,7 @@ func (client *Client) exchange(builder proto.RequestBuilder) (respHeader *proto.
 	}
 
 	msgData := make([]byte, header.ZipSize)
-	_, err = io.ReadFull(client.conn, msgData)
+	_, err = io.ReadFull(conn, msgData)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -415,18 +558,84 @@ func (client *Client) Connect() (*proto.Hello1Reply, error) {
 
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	obj := proto.NewHello1()
-	var reply *proto.Hello1Reply
-	// 握手回调内发送 `Hello1` 请求并解析应答，失败由外层切换下一地址重试。
-	err := client.connectWithHandshake(func() error {
-		var err error
-		reply, err = client.executeLocked(obj)
-		return err
-	})
+	if client.closed {
+		return nil, errors.New("client closed")
+	}
+	// 幂等：已有池直接复用，避免重复拨号。
+	if len(client.pool) > 0 {
+		return nil, nil
+	}
+	reply, err := client.buildPoolLocked()
 	if err != nil {
 		return nil, err
 	}
-	return reply, nil
+	r, _ := reply.(*proto.Hello1Reply)
+	return r, nil
+}
+
+// buildPoolLocked 在调用方已持池锁的前提下并发预建 `PoolSize` 条连接并启动补建循环。
+//
+// 候选地址先按可达性与延迟排序（探活超时限制 5 秒），再并发拨号前 `PoolSize` 个候选：
+// 各地址拨号或握手失败即从候选剔除继续尝试下一地址；全部失败返回最后一次错误；部分成功则
+// 以已建条数先行运行，由补建循环补齐。返回首个成功连接的握手应答；候选为空时返回 `nil` 与错误。
+func (client *Client) buildPoolLocked() (any, error) {
+	addresses := client.addresses()
+	if len(addresses) == 0 {
+		return nil, errors.New("no tcp address configured")
+	}
+	// 建池始终优先连接可达且低延迟的服务器：探活超时限制在 5 秒内，避免在
+	// 大面积不可达的候选地址上浪费拨号时间（正式连接仍使用完整超时）。
+	probeTimeout := min(client.timeout(), 5*time.Second)
+	addresses = probeOrder(addresses, probeTimeout)
+	poolSize := client.opt.PoolSize
+
+	// 并发拨号 `PoolSize` 条连接，候选地址按排序轮转分配（第 `i` 条用 `addresses[i%len]`）：
+	// 单地址超时不阻塞其余地址，整体耗时由最慢一次拨号决定；地址不足时同一地址并发建多条。
+	limit := poolSize
+	type poolResult struct {
+		pc    *pooledConn
+		reply any
+		err   error
+	}
+	results := make(chan poolResult, limit)
+	var wg sync.WaitGroup
+	for i := 0; i < limit; i++ {
+		wg.Add(1)
+		go func(addr string) {
+			defer wg.Done()
+			pc, reply, err := client.buildPoolConn(addr)
+			results <- poolResult{pc: pc, reply: reply, err: err}
+		}(addresses[i%len(addresses)])
+	}
+	wg.Wait()
+	close(results)
+
+	var lastErr error
+	var firstReply any
+	for r := range results {
+		if r.err != nil {
+			// 该地址拨号或握手失败，由补建循环继续尝试其余候选。
+			lastErr = r.err
+			continue
+		}
+		if firstReply == nil {
+			firstReply = r.reply
+		}
+		client.pool = append(client.pool, r.pc)
+	}
+	if len(client.pool) == 0 {
+		if lastErr == nil {
+			lastErr = errors.New("no available tcp address")
+		}
+		return nil, lastErr
+	}
+	// 启动补建循环（仅一次）。调用方已持池锁，直接启动避免二次加锁；
+	// 停止信号通道先建好，保证循环可按 `Disconnect` 退出。
+	if client.done == nil {
+		client.done = make(chan struct{})
+	}
+	client.refill.Do(func() { go client.refillLoop() })
+	return firstReply, nil
 }
 
 // ConnectEx 连接扩展市场服务器并完成登录握手。
@@ -448,27 +657,34 @@ func (client *Client) ConnectEx() (*proto.ExLoginReply, error) {
 
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	obj := proto.NewExLogin()
-	var reply *proto.ExLoginReply
-	err := client.connectWithHandshake(func() error {
-		var err error
-		reply, err = client.executeLocked(obj)
-		return err
-	})
+	if client.closed {
+		return nil, errors.New("client closed")
+	}
+	// 幂等：已有池直接复用，避免重复拨号。
+	if len(client.pool) > 0 {
+		return nil, nil
+	}
+	reply, err := client.buildPoolLocked()
 	if err != nil {
 		return nil, err
 	}
-	return reply, nil
+	r, _ := reply.(*proto.ExLoginReply)
+	return r, nil
 }
 
-// Disconnect 断开当前连接，并级联关闭关联的内嵌主站、扩展站连接。
+// Disconnect 关闭连接池与补建循环，并级联关闭关联的内嵌主站、扩展站连接。
 //
 // 本方法无业务入参；返回关闭过程中遇到的首个错误，后续内嵌连接的关闭错误不会覆盖先出现的错误；
-// 已关闭的内嵌连接会跳过重复关闭。
+// 已关闭的内嵌连接会跳过重复关闭。关闭后客户端不可再借出连接，需重新 `Connect` 建池。
 func (client *Client) Disconnect() error {
 	client.mu.Lock()
-	conn := client.conn
-	client.conn = nil
+	client.closed = true
+	if client.done != nil {
+		close(client.done)
+		client.done = nil
+	}
+	pool := client.pool
+	client.pool = nil
 	main := client.main
 	ex := client.ex
 	client.main = nil
@@ -476,8 +692,10 @@ func (client *Client) Disconnect() error {
 	client.mu.Unlock()
 
 	var err error
-	if conn != nil {
-		err = conn.Close()
+	for _, pc := range pool {
+		if closeErr := pc.conn.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
 	}
 	// 内嵌主站可能就是自身，跳过避免重复关闭；错误不覆盖主连接错误。
 	if main != nil && main != client {

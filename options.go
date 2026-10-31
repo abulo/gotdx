@@ -12,6 +12,7 @@ const (
 	_defaultMacExTCPAddress = "116.205.135.205:7727"
 	_defaultRetryTimes      = 3
 	_defaultTimeoutSec      = 8
+	_defaultPoolSize        = 3
 )
 
 // Options 保存客户端创建时使用的主站、扩展站、MAC 站地址与地址池、重试次数、超时等全部配置。
@@ -28,9 +29,9 @@ type Options struct {
 	MacTCPAddressPool   []string // MAC 主行情服务器地址池；空切片使用内置默认池
 	MacExTCPAddress     string   // MAC 扩展行情服务器单点地址，格式为 `host:port`；空串时回退到 MAC 扩展站地址池
 	MacExTCPAddressPool []string // MAC 扩展行情服务器地址池；空切片使用内置默认池
-	AutoSelectFastest   bool     // 为 `true` 时连接前先对地址池做 TCP 测速并优先尝试低延迟节点；为 `false` 按配置顺序拨号
 	MaxRetryTimes       int      // 单次请求写失败的重试次数；构造阶段由默认值 3 填充，连接流程中按该值重试
 	TimeoutSec          int      // 连接与读写共用的超时时间，单位秒；构造阶段由默认值 8 秒填充，非正数回退默认
+	PoolSize            int      // 连接池大小，即并行可用的 TCP 连接条数；构造阶段由默认值 3 填充，非正数回退默认
 	FuturesCalendarPath string   // 期货交易日历 SQLite 路径；为空时不转换 MAC 期货自然时间
 }
 
@@ -52,6 +53,7 @@ func defaultOptions() *Options {
 		MacExTCPAddressPool: macExPool,
 		MaxRetryTimes:       _defaultRetryTimes,
 		TimeoutSec:          _defaultTimeoutSec,
+		PoolSize:            _defaultPoolSize,
 		FuturesCalendarPath: defaultFuturesCalendarPath(),
 	}
 }
@@ -159,11 +161,14 @@ func WithFuturesCalendarPath(path string) Option {
 	}
 }
 
-// WithAutoSelectFastest 启用或关闭连接前的地址池 TCP 测速排序，启用后优先连接低延迟节点。
+// WithPoolSize 设置连接池大小，即并行可用的 TCP 连接条数。
 //
-// 参数 `enabled` 为 `true` 时启用测速排序，为 `false` 时按配置顺序拨号。
-func WithAutoSelectFastest(enabled bool) Option {
+// 参数 `poolSize` 为目标连接条数；传入非正数时保持默认池大小。池内连接各自独立握手，
+// 请求按轮询分散到各连接，连接之间并行、单连接内部串行。
+func WithPoolSize(poolSize int) Option {
 	return func(o *Options) {
-		o.AutoSelectFastest = enabled
+		if poolSize > 0 {
+			o.PoolSize = poolSize
+		}
 	}
 }

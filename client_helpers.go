@@ -11,32 +11,29 @@ import (
 // `makeStocks`、`makeExStocks` 在配对前校验长度时返回。
 var ErrMarketCodeCount = errors.New("market code count error")
 
-// execute 加锁执行一次协议请求，保证同一连接上的请求串行化，避免并发读写打乱协议帧。
+// execute 完成一次协议请求-响应流程：从池内借出一条连接、持该连接串行锁执行收发，
+// 解析响应后归还（连接出错时由池销毁该条并后台补建）。
 //
-// 参数 `protocol` 为待执行的协议对象，泛型 `T` 对应该协议的应答类型；返回协议解析完成后的应答对象
-// 与错误，收发或解析失败时返回 `T` 零值与该错误。
+// 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；池内暂无连接（未连接或全部被
+// 丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
 func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-
-	return client.executeLocked(protocol)
-}
-
-// executeLocked 在调用方已持锁的前提下执行协议流程：收发数据、解析响应、返回业务应答对象。
-//
-// 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；收发或 `ParseResponse` 失败时返回 `T`
-// 零值与错误，由上层决定是否重建连接。
-func (client *Client) executeLocked[T any](protocol proto.Protocol[T]) (T, error) {
 	var zero T
-
-	header, payload, err := client.exchange(protocol)
+	pc, err := client.acquire()
 	if err != nil {
 		return zero, err
 	}
-	// 协议解析失败时返回零值与错误，由上层决定是否重建连接。
-	if err := protocol.ParseResponse(header, payload); err != nil {
+	pc.mu.Lock()
+	header, payload, err := client.exchange(pc.conn, protocol)
+	if err == nil {
+		err = protocol.ParseResponse(header, payload)
+	}
+	if err != nil {
+		// 收发或解析失败后该连接帧边界不可信，销毁并交后台补建。
+		client.discard(pc)
+		pc.mu.Unlock()
 		return zero, err
 	}
+	pc.mu.Unlock()
 	return protocol.Response(), nil
 }
 

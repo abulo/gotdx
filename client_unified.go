@@ -16,7 +16,7 @@ import (
 func (client *Client) quotationClient() (*Client, error) {
 	if client.mode == clientModeMain {
 		// 自身尚未连接时先完成主站握手。
-		if client.conn == nil {
+		if len(client.pool) == 0 {
 			if _, err := client.Connect(); err != nil {
 				return nil, err
 			}
@@ -31,7 +31,7 @@ func (client *Client) quotationClient() (*Client, error) {
 	main := client.main
 	client.mu.Unlock()
 
-	if main.conn == nil {
+	if len(main.pool) == 0 {
 		if _, err := main.Connect(); err != nil {
 			return nil, err
 		}
@@ -46,7 +46,7 @@ func (client *Client) quotationClient() (*Client, error) {
 func (client *Client) exQuotationClient() (*Client, error) {
 	if client.mode == clientModeEx {
 		// 自身尚未连接时先完成扩展站登录握手。
-		if client.conn == nil {
+		if len(client.pool) == 0 {
 			if _, err := client.ConnectEx(); err != nil {
 				return nil, err
 			}
@@ -61,7 +61,7 @@ func (client *Client) exQuotationClient() (*Client, error) {
 	ex := client.ex
 	client.mu.Unlock()
 
-	if ex.conn == nil {
+	if len(ex.pool) == 0 {
 		if _, err := ex.ConnectEx(); err != nil {
 			return nil, err
 		}

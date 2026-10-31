@@ -18,9 +18,9 @@ func main() {
 	logProbe("mac", gotdx.MACHosts(), 5)
 	logProbe("mac-ex", gotdx.MACExHosts(), 5)
 
-	// 开启连接前自动测速排序，候选地址中优先连接延迟最低者；拨号与读写超时固定为 6 秒。
-	client := gotdx.New(gotdx.WithAutoSelectFastest(true), gotdx.WithTimeoutSec(6))
+	// 构造客户端并按 `FastestHost` 选出延迟最低的主站；拨号与读写超时固定为 6 秒。
 	// 全部候选地址不可达时 `FastestHost` 返回 `ErrNoReachableHosts`，此处降级为日志提示后退出。
+	client := gotdx.New(gotdx.WithTimeoutSec(6))
 	fastest, err := client.FastestHost()
 	if err != nil {
 		log.Printf("fastest main host unavailable: %v", err)

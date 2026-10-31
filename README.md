@@ -60,7 +60,6 @@ func main() {
 		gotdx.WithTCPAddressPool(mainHosts[1:]...),
 		gotdx.WithExTCPAddress(exHosts[0]),
 		gotdx.WithExTCPAddressPool(exHosts[1:]...),
-		gotdx.WithAutoSelectFastest(true),
 		gotdx.WithTimeoutSec(6),
 	)
 	defer client.Disconnect()
@@ -111,12 +110,28 @@ if err != nil {
 log.Printf("fastest ex host: %s %s", fastest.Name, fastest.Address)
 
 client := gotdx.New(
-	gotdx.WithAutoSelectFastest(true),
 	gotdx.WithTimeoutSec(6),
 )
 ```
 
 可用列表包括：`MainHosts`、`BrokerHosts`、`ExHosts`、`MACHosts`、`MACExHosts`，以及对应的 `*HostAddresses` 便捷函数。
+
+### 连接池
+
+`gotdx.Client` 以**动态连接池**与行情服务器通信：`Connect`（或 `ConnectEx` / `ConnectMAC`）按 `WithPoolSize` 预建 N 条 TCP 连接，每条连接内部串行执行请求、连接之间并行，吞吐不再受单连接往返限制。建池时始终并发测速，优先连接延迟最低的服务器；单个地址拨号或握手失败自动剔除并尝试下一候选，部分失败以已建条数先行运行。运行期间**每分钟**重新测速一次并切换到当前最快的服务器，网络波动或服务器迁移时连接池自动跟随。
+
+```go
+client := gotdx.New(
+	gotdx.WithPoolSize(3),       // 默认 3，非正数忽略并回退默认
+	gotdx.WithTimeoutSec(6),
+)
+if _, err := client.Connect(); err != nil {
+	log.Fatal(err)
+}
+defer client.Disconnect()
+```
+
+运行期某条连接被丢弃（网络错误、响应帧损坏）后，后台补建循环每秒检查池容量并自动补齐；`Disconnect` 关闭池内全部连接并停止补建。`CurrentAddress` 返回池内首条连接实际连通的服务器地址。各查询方法保持原有签名，可安全并发调用。
 
 <a id="capabilities"></a>
 ## 能力概览
@@ -349,7 +364,7 @@ Web Viewer 中的 ICFQS HTTP 原始接口已按 `主题投资`、`行情`、`龙
 - 内置列表：`MainHosts`, `BrokerHosts`, `ExHosts`, `MACHosts`, `MACExHosts`
 - 地址便捷函数：`MainHostAddresses`, `BrokerHostAddresses`, `ExHostAddresses`, `MACHostAddresses`, `MACExHostAddresses`
 - 测速函数：`ProbeHosts`, `ProbeAddresses`, `FastestHost`, `FastestAddress`
-- 客户端能力：`Client.ProbeHosts`, `Client.FastestHost`, `WithAutoSelectFastest`
+- 客户端能力：`Client.ProbeHosts`, `Client.FastestHost`
 
 ### 试验与兼容协议
 

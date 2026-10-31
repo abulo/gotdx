@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/bensema/gotdx/proto"
 )
 
 func TestDefaultOptionsUseBuiltInHostPools(t *testing.T) {
@@ -75,9 +77,21 @@ func TestConnectUsesAddressPoolFallback(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		conn, err := ln.Accept()
-		if err == nil {
-			_ = conn.Close()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// 每条连接读取请求头后回主站握手应答，保证测速探测与 `Connect` 建池握手都能成功。
+			go func(conn net.Conn) {
+				defer conn.Close()
+				header := make([]byte, 12)
+				if _, err := io.ReadFull(conn, header); err != nil {
+					return
+				}
+				body := fakeHello1Body()
+				_, _ = conn.Write(append(fakeRespHeader(0, proto.KMSG_CMD1, uint16(len(body))), body...))
+			}(conn)
 		}
 	}()
 
@@ -86,16 +100,16 @@ func TestConnectUsesAddressPoolFallback(t *testing.T) {
 		WithTCPAddress("127.0.0.1:1"),
 		WithTCPAddressPool(ln.Addr().String()),
 		WithTimeoutSec(1),
+		WithPoolSize(1),
 	)
 	defer client.Disconnect()
 
-	if err := client.connect(); err != nil {
+	if _, err := client.Connect(); err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
 	if got := client.CurrentAddress(); got != ln.Addr().String() {
 		t.Fatalf("unexpected current address: %q", got)
 	}
-	<-done
 }
 
 // stubConn 是不进行真实网络读写的 `net.Conn` 桩，供拨号探测测试替换真实连接。

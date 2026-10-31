@@ -1,6 +1,7 @@
 package gotdx
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/bensema/gotdx/proto"
@@ -47,17 +48,21 @@ const maxMACMarketMonitorStart = uint32(^uint16(0))
 
 // ConnectMAC 连接 MAC 行情主站。
 //
-// 本方法无业务入参；已建立连接时直接复用现有连接；方法加锁避免并发重复拨号。拨号失败返回底层连接
-// 错误，成功返回 `nil`。
+// 本方法无业务入参；已建立连接池时直接复用现有池；方法加锁避免并发重复拨号。MAC 站无握手协议，
+// 拨号即视为连接成功；全部候选地址拨号失败返回最后一次错误，成功返回 `nil`。
 func (client *Client) ConnectMAC() error {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
-	// 幂等：已有连接直接复用。
-	if client.conn != nil {
+	if client.closed {
+		return errors.New("client closed")
+	}
+	// 幂等：已有池直接复用。
+	if len(client.pool) > 0 {
 		return nil
 	}
-	return client.connect()
+	_, err := client.buildPoolLocked()
+	return err
 }
 
 // GetMACBoardCount 查询指定类型板块的总数（底层协议接口）。

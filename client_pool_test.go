@@ -1,0 +1,252 @@
+package gotdx
+
+import (
+	"sync"
+	"testing"
+	"time"
+)
+
+// TestPoolBuildsExpectedConns 验证 `Connect` 按 `PoolSize` 预建指定条数的连接，
+// 且各连接实际地址一致（同一候选地址）。
+func TestPoolBuildsExpectedConns(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(3))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	c.mu.Lock()
+	got := len(c.pool)
+	c.mu.Unlock()
+	if got != 3 {
+		t.Fatalf("want pool of 3, got %d", got)
+	}
+	if c.CurrentAddress() != addr {
+		t.Fatalf("want current address %s, got %s", addr, c.CurrentAddress())
+	}
+}
+
+// TestPoolRoundRobin 验证借出连接按轮询分散：连续两次借出应命中不同连接。
+func TestPoolRoundRobin(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(2))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	pc1, err := c.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc2, err := c.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc1 == pc2 {
+		t.Fatal("round-robin should hand out different conns")
+	}
+}
+
+// TestPoolConcurrentExecutes 验证高并发请求分散到池内多条连接且全部成功
+// （单连接串行、连接间并行，帧边界不被破坏）。
+func TestPoolConcurrentExecutes(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(3))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	const workers = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.StockHistoryTickChart(20260811, 0, "000779"); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent execute failed: %v", err)
+	}
+}
+
+// TestPoolDiscardAndRefill 验证坏连接被丢弃后由补建循环补齐池容量。
+func TestPoolDiscardAndRefill(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 59202)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(1))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	// 超长响应触发坏数据错误，唯一连接被丢弃，池清空。
+	if _, err := c.StockHistoryTickChart(20260811, 0, "000779"); err == nil {
+		t.Fatal("expected ErrBadData")
+	}
+	c.mu.Lock()
+	empty := len(c.pool) == 0
+	c.mu.Unlock()
+	if !empty {
+		t.Fatal("pool must be empty after discarding the only conn")
+	}
+
+	// 等待补建循环（间隔 1 秒）把池补回。
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		filled := len(c.pool)
+		c.mu.Unlock()
+		if filled == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pool was not refilled in time")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestConnectIdempotent 验证重复 `Connect` 复用已有池，不重复拨号。
+func TestConnectIdempotent(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(2))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("second connect should be idempotent: %v", err)
+	}
+	c.mu.Lock()
+	got := len(c.pool)
+	c.mu.Unlock()
+	if got != 2 {
+		t.Fatalf("pool size must stay 2, got %d", got)
+	}
+}
+
+// TestDisconnectClosesPool 验证 `Disconnect` 清空池且后续借出报错。
+func TestDisconnectClosesPool(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(2))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	if err := c.Disconnect(); err != nil {
+		t.Fatalf("disconnect failed: %v", err)
+	}
+	c.mu.Lock()
+	empty := len(c.pool) == 0
+	c.mu.Unlock()
+	if !empty {
+		t.Fatal("pool must be empty after disconnect")
+	}
+	if _, err := c.acquire(); err == nil {
+		t.Fatal("acquire must fail after disconnect")
+	}
+	// 关闭后再查询直接报无可用连接（与单连接模型"connection is nil"等价）。
+	if _, err := c.StockHistoryTickChart(20260811, 0, "000779"); err == nil {
+		t.Fatal("execute must fail after disconnect")
+	}
+}
+
+// TestPoolSizeNormalized 验证非正数 `PoolSize` 回退默认值。
+func TestPoolSizeNormalized(t *testing.T) {
+	c := New(WithPoolSize(0))
+	if c.opt.PoolSize <= 0 {
+		t.Fatalf("pool size must be normalized to default, got %d", c.opt.PoolSize)
+	}
+}
+
+// TestAcquireBeforeConnect 验证未连接时借出连接直接报错。
+func TestAcquireBeforeConnect(t *testing.T) {
+	c := New(WithPoolSize(1))
+	if _, err := c.acquire(); err == nil {
+		t.Fatal("acquire must fail before connect")
+	}
+}
+
+// TestRebalanceSwitchesToFastest 验证重平衡把连接池切换到当前最快的服务器：
+// 原最快地址不可达后，池内连接全部替换为指向可达地址的新连接。
+func TestRebalanceSwitchesToFastest(t *testing.T) {
+	aAddr, aStop := fakeTDXServer(t, 0)
+	defer aStop()
+	bAddr, bStop := fakeTDXServer(t, 0)
+	defer bStop()
+
+	c := New(WithTCPAddress(aAddr), WithTCPAddressPool(bAddr), WithTimeoutSec(5), WithPoolSize(2))
+	// 手动构造"已连接旧地址 A"的池。
+	pcA, _, err := c.buildPoolConn(aAddr)
+	if err != nil {
+		t.Fatalf("build conn to A failed: %v", err)
+	}
+	c.mu.Lock()
+	c.pool = []*pooledConn{pcA}
+	c.mu.Unlock()
+
+	// 关闭 A 模拟服务器不可达，触发重平衡。
+	aStop()
+	c.rebalancePool()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.pool) != 2 {
+		t.Fatalf("want pool of 2 after rebalance, got %d", len(c.pool))
+	}
+	for _, pc := range c.pool {
+		if pc.addr != bAddr {
+			t.Fatalf("pool must point to fastest %s, got %s", bAddr, pc.addr)
+		}
+	}
+}
+
+// TestRebalanceKeepsFastestPool 验证池内连接已全部指向最快地址时，重平衡不做任何切换。
+func TestRebalanceKeepsFastestPool(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTCPAddressPool(), WithTimeoutSec(5), WithPoolSize(2))
+	pc1, _, err := c.buildPoolConn(addr)
+	if err != nil {
+		t.Fatalf("build conn 1 failed: %v", err)
+	}
+	pc2, _, err := c.buildPoolConn(addr)
+	if err != nil {
+		t.Fatalf("build conn 2 failed: %v", err)
+	}
+	c.mu.Lock()
+	c.pool = []*pooledConn{pc1, pc2}
+	c.mu.Unlock()
+
+	c.rebalancePool()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.pool) != 2 {
+		t.Fatalf("pool size must stay 2, got %d", len(c.pool))
+	}
+	for _, pc := range c.pool {
+		if pc.addr != addr {
+			t.Fatalf("pool must stay on %s, got %s", addr, pc.addr)
+		}
+	}
+}

@@ -109,18 +109,19 @@ func TestExchangeBadDataDiscardsConn(t *testing.T) {
 	addr, stop := fakeTDXServer(t, 59202)
 	defer stop()
 
-	c := New(WithTCPAddress(addr), WithTimeoutSec(5))
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(1))
 	if _, err := c.Connect(); err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
-	if c.conn == nil {
+	defer c.Disconnect()
+	if len(c.pool) == 0 {
 		t.Fatal("expected connected client")
 	}
 
 	if _, err := c.StockHistoryTickChart(20260811, 0, "000779"); err != types.ErrBadData {
 		t.Fatalf("expected ErrBadData, got %v", err)
 	}
-	if c.conn != nil {
+	if len(c.pool) != 0 {
 		t.Fatal("connection must be discarded after ErrBadData")
 	}
 }
@@ -130,7 +131,7 @@ func TestExchangeOKKeepsConn(t *testing.T) {
 	addr, stop := fakeTDXServer(t, 0)
 	defer stop()
 
-	c := New(WithTCPAddress(addr), WithTimeoutSec(5))
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(1))
 	if _, err := c.Connect(); err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestExchangeOKKeepsConn(t *testing.T) {
 	if _, err := c.StockHistoryTickChart(20260811, 0, "000779"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c.conn == nil {
+	if len(c.pool) == 0 {
 		t.Fatal("connection must be kept on success")
 	}
 	// 连续第二次请求仍可用，验证连接未被误丢弃。
@@ -193,7 +194,7 @@ func TestExchangeTimeoutDiscardsConn(t *testing.T) {
 		}
 	}()
 
-	c := New(WithTCPAddress(ln.Addr().String()), WithTimeoutSec(1))
+	c := New(WithTCPAddress(ln.Addr().String()), WithTimeoutSec(1), WithTCPAddressPool(), WithPoolSize(1))
 	if _, err := c.Connect(); err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestExchangeTimeoutDiscardsConn(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
 		t.Fatalf("expected quick timeout, took %v", elapsed)
 	}
-	if c.conn != nil {
+	if len(c.pool) != 0 {
 		t.Fatal("connection must be discarded after read timeout")
 	}
 }

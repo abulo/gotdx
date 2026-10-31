@@ -42,7 +42,7 @@ func TestClientExecuteGenericMethod(t *testing.T) {
 	})
 
 	client := New(WithTimeoutSec(1))
-	client.conn = clientConn
+	client.pool = []*pooledConn{{conn: clientConn}}
 
 	serverDone := make(chan error, 1)
 	go func() {
