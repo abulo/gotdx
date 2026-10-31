@@ -537,7 +537,9 @@ func (client *Client) rebalancePool() {
 		return
 	}
 
-	probeTimeout := min(client.timeout(), fastDialTimeout)
+	// 测速探活与建池兜底同用短超时：可达节点毫秒级拨号即回，慢样本与失效节点
+	// 快速判负，全灭时超时连接驻留时间短，不拥塞同进程其他入口。
+	probeTimeout := min(client.timeout(), slowProbeTimeout)
 	verified := client.probeReachable(candidates, probeTimeout)
 	var fastest string
 	reachable := make([]string, 0, len(verified))
@@ -646,8 +648,8 @@ func (client *Client) refillPool() {
 	} else {
 		// 池完全为空（初始建池失败或全部断连）：优先用最近一次可达地址收敛候选，
 		// 避免每轮补建都全量探活；无可达记录时回退配置地址池。流水线探测首个可用
-		// 连接并直接复用（零额外建连），探活超时 2 秒让全灭场景快速判负。
-		probeTimeout := min(client.timeout(), fastDialTimeout)
+		// 连接并直接复用（零额外建连），兜底探活用更短超时让全灭场景快速判负。
+		probeTimeout := min(client.timeout(), slowProbeTimeout)
 		candidates := client.addresses()
 		if len(lastReachable) > 0 {
 			candidates = lastReachable
@@ -867,8 +869,9 @@ func (client *Client) buildPoolLocked() (any, error) {
 	}
 
 	// 慢路径：并行快建全部失败时流水线探测首个可用连接——拨号成功即握手、首个
-	// 握手成功者直接复用（零额外建连），探活超时收紧为 2 秒让全灭场景快速判负。
-	probeTimeout := min(client.timeout(), fastDialTimeout)
+	// 握手成功者直接复用（零额外建连），兜底探活用更短超时让全灭场景快速判负并
+	// 缩短超时连接驻留，避免大池全灭时并发超时连接拥塞同进程其他入口建池。
+	probeTimeout := min(client.timeout(), slowProbeTimeout)
 	first, reply := client.probeFirstReachable(addresses, probeTimeout)
 	if first == nil {
 		return nil, fmt.Errorf("no connection to any candidate")
@@ -896,10 +899,11 @@ type probeResult struct {
 	latency   time.Duration
 }
 
-// probeFirstReachable 流水线探测首个可用连接：并发拨号候选，任一地址拨号成功立即
-// 执行当前模式握手，首个握手成功者连同握手应答一起返回——建池兜底与池空补建只求
-// 最快可用，不等全部候选完成（与全量排序的 `probeReachable` 互补）。全部失败返回
-// `nil`；提前返回后其余探测 goroutine 自然结束，多余连接自行关闭，不泄漏。
+// probeFirstReachable 流水线探测首个可用连接：以 `probeConcurrencyWindow` 为并发窗口
+// 滚动拨号候选，任一地址拨号成功立即执行当前模式握手，首个握手成功者连同握手应答一起
+// 返回并通知其余候选放弃排队拨号——建池兜底与池空补建只求最快可用，不等全部候选完成
+// （与全量排序的 `probeReachable` 互补）。全部失败返回 `nil`；提前返回后其余探测
+// goroutine 自然结束，多余连接自行关闭，不泄漏。
 func (client *Client) probeFirstReachable(addresses []string, timeout time.Duration) (*pooledConn, any) {
 	if len(addresses) == 0 {
 		return nil, nil
@@ -909,12 +913,24 @@ func (client *Client) probeFirstReachable(addresses []string, timeout time.Durat
 		reply any
 	}
 	resultsCh := make(chan connRes, len(addresses))
+	sem := make(chan struct{}, probeConcurrencyWindow)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(stopped) }) }
 	var wg sync.WaitGroup
 	for _, address := range addresses {
 		address := address
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// 已有成功者抢先返回后，未开始的候选直接放弃，避免排队拨号占用窗口。
+			select {
+			case <-stopped:
+				return
+			default:
+			}
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			conn, err := net.DialTimeout("tcp", address, timeout)
 			if err != nil {
 				return
@@ -929,6 +945,7 @@ func (client *Client) probeFirstReachable(addresses []string, timeout time.Durat
 			}
 			select {
 			case resultsCh <- connRes{pc: pc, reply: reply}:
+				stop() // 首个成功者通知其余候选放弃排队
 			default:
 				// 已有更快的成功者抢先返回，本条连接不再需要。
 				_ = conn.Close()
@@ -956,17 +973,21 @@ func (client *Client) probeReachable(addresses []string, timeout time.Duration) 
 	if len(addresses) == 0 {
 		return nil
 	}
-	// 阶段一：并发拨号筛选，保留 TCP 可达的地址并记录拨号耗时。
+	// 阶段一：以 `probeConcurrencyWindow` 为窗口并发拨号筛选，保留 TCP 可达的地址
+	// 并记录拨号耗时；窗口内滚动调度，避免大池全量并发超时连接拥塞网络栈。
 	var (
 		mu     sync.Mutex
 		wg     sync.WaitGroup
 		dialed = make([]probeResult, 0, len(addresses))
 	)
+	sem := make(chan struct{}, probeConcurrencyWindow)
 	for _, address := range addresses {
 		address := address
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			started := time.Now()
 			conn, err := net.DialTimeout("tcp", address, timeout)
 			if err != nil {

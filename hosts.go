@@ -317,11 +317,23 @@ func defaultAddressAndPool(addresses []string, fallback string) (string, []strin
 	return addresses[0], append([]string(nil), addresses[1:]...)
 }
 
-// probeAddressesWithDial 并发拨号探测地址列表，组装排序后的探测结果。
+// probeConcurrencyWindow 为探活并发窗口上限：同一时刻最多允许该数量的拨号在途，
+// 超过窗口的候选滚动排队。避免大池全量并发拨号（例如 130+ 候选同时超时）在短时间
+// 内占满本机网络栈，造成多入口同进程连续建池时的拥塞耦合；窗口内滚动调度下，全部
+// 候选的最坏判负时间约为候选数除以窗口向上取整后乘以单次拨号超时。
+const probeConcurrencyWindow = 32
+
+// slowProbeTimeout 为慢路径兜底探活的单次拨号超时：快路径已用 `fastDialTimeout`
+// 排除偶发秒级慢样本，慢路径只需更短超时快速判定全灭并缩短超时连接驻留时长
+// （大池全灭时大量超时连接在途会瞬时拥塞本机网络栈，影响同进程其他入口建池）。
+const slowProbeTimeout = 300 * time.Millisecond
+
+// probeAddressesWithDial 受限并发拨号探测地址列表，组装排序后的探测结果。
 //
 // `addresses` 为待探测 `host:port` 地址；`timeout` 为拨号超时，非正数回退默认 8 秒；`dial`
-// 为可替换的拨号函数，便于测试时注入假拨号实现。各 `goroutine` 先通过互斥锁收集结果，探测
-// 结束后统一按可达性、延迟、名称、地址排序返回。
+// 为可替换的拨号函数，便于测试时注入假拨号实现。拨号以 `probeConcurrencyWindow` 为并发
+// 窗口滚动调度，各 `goroutine` 先通过互斥锁收集结果，探测结束后统一按可达性、延迟、名称、
+// 地址排序返回。
 func probeAddressesWithDial(addresses []string, timeout time.Duration, dial func(network, address string, timeout time.Duration) (net.Conn, error)) []HostProbeResult {
 	if timeout <= 0 {
 		timeout = time.Duration(_defaultTimeoutSec) * time.Second
@@ -332,13 +344,16 @@ func probeAddressesWithDial(addresses []string, timeout time.Duration, dial func
 		mu sync.Mutex
 		wg sync.WaitGroup
 	)
-
+	sem := make(chan struct{}, probeConcurrencyWindow)
 	for _, address := range addresses {
 		// 循环变量在闭包内按当前取值捕获，避免所有 `goroutine` 读到同一地址。
 		address := address
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// 滚动窗口限制在途拨号数；拨号完成（无论成败）即释放，下一个候选续接。
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			result := hostProbeFromAddress(address)
 			started := time.Now()
