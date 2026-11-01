@@ -43,7 +43,12 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 			client.setDataAddr(nonEmptyAddr)
 			return nonEmpty, nil
 		}
-		// 并行探测仍空：该日期确实无成交，返回首次应答；各节点空数据计数已沉淀。
+		// 并行探测仍空：返回首次应答（该日期可能确实无成交）；若池内已有节点被健康度
+		// 降权，后台触发一次强制全量探活重平衡，尽快迁出数据不全节点，不必等到下一次
+		// 定时 tick。重平衡自身由串行锁保护，与定时 tick 并发时自动跳过。
+		if client.hasDegradedNode() {
+			go client.rebalancePool(true)
+		}
 		return reply, nil
 	}
 	// 本次连接即为可用节点：清零其空数据计数并记录供定向优先复用。
@@ -219,6 +224,19 @@ func (client *Client) nodeHealthDegradedLocked(addr string) bool {
 	}
 	h := client.health[addr]
 	return h != nil && h.emptyStreak >= healthDowngradeThreshold
+}
+
+// hasDegradedNode 报告当前是否存在被健康度降权的节点，供全空重试后判断是否需要触发
+// 后台强制重平衡；空映射或无降权节点返回 `false`，保持原行为不发起额外探活。
+func (client *Client) hasDegradedNode() bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, h := range client.health {
+		if h.emptyStreak >= healthDowngradeThreshold {
+			return true
+		}
+	}
+	return false
 }
 
 func makeCode9(code string) [9]byte {

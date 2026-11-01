@@ -83,6 +83,7 @@ type Client struct {
 	lastReachable       []string                 // 最近一次探活确认可达的地址列表，按测得耗时升序，供重平衡与补建收敛候选
 	addrLatency         map[string]time.Duration // 各地址最近一次建连测得的拨号+握手总耗时，供候选排序与后台预比较；池锁保护
 	health              map[string]*nodeHealth   // 各地址连续空数据健康度统计，定向借出对降权节点跳过；池锁保护
+	rebalanceMu         sync.Mutex               // 重平衡串行锁：避免定时 tick 与全空后台修复并发重建连接
 	rebalanceTick       int                      // 重平衡执行计数，每 5 次触发一次全量探活刷新可达集
 }
 
@@ -462,7 +463,7 @@ func (client *Client) refillLoop() {
 		case <-heartbeatTicker.C:
 			client.heartbeatPool()
 		case <-rebalanceTicker.C:
-			client.rebalancePool()
+			client.rebalancePool(false)
 		}
 	}
 }
@@ -553,8 +554,52 @@ func (client *Client) heartbeatConn(pc *pooledConn) error {
 	return nil
 }
 
-// refillPoolBulk 启动时并发补齐池余量：与池内首条连接同地址并发拨号
-// `PoolSize-当前条数` 条，只入成功者；全部失败不重试，由补建循环后续补齐。
+// buildRefillConnection 为补建流程构建一条连接：稳态优先复用首选地址（保持节点亲和、
+// 避免每轮补建重新测速）；首选拨号或握手失败时回退到其他可达候选，避免池内多条连接
+// 全部绑定同一故障域。
+//
+// 方案决策：首选地址可用时不发起任何额外探活，行为与现状一致；只有首选失败才收敛候选
+// （最近可达列表优先并剔除首选地址，不足时回退配置地址池），流水线探测首个可用连接直接
+// 复用。回退建成后记录测得耗时并刷新可达候选排序；首选与候选全部失败返回错误，由调用方
+// 等待下一轮补建循环重试。
+func (client *Client) buildRefillConnection(preferred string) (*pooledConn, any, error) {
+	if preferred != "" {
+		started := time.Now()
+		pc, reply, err := client.buildPoolConn(preferred)
+		if err == nil {
+			client.mu.Lock()
+			client.recordAddrLatencyLocked(preferred, time.Since(started))
+			client.mu.Unlock()
+			return pc, reply, nil
+		}
+	}
+
+	// 首选不可达：回退候选池其他地址，分散故障域；候选优先取最近可达记录，空则回退配置
+	// 地址池，并剔除首选地址避免再次打到同一节点。
+	client.mu.Lock()
+	candidates := append([]string(nil), client.lastReachable...)
+	client.mu.Unlock()
+	candidates = removeAddress(candidates, preferred)
+	if len(candidates) == 0 {
+		candidates = removeAddress(client.addresses(), preferred)
+	}
+	probeTimeout := min(client.timeout(), slowProbeTimeout)
+	started := time.Now()
+	pc, reply := client.probeFirstReachable(candidates, probeTimeout)
+	if pc == nil {
+		return nil, nil, errors.New("no reachable fallback candidate")
+	}
+	elapsed := time.Since(started)
+	client.mu.Lock()
+	client.recordAddrLatencyLocked(pc.addr, elapsed)
+	client.refreshReachableLocked(map[string]time.Duration{pc.addr: elapsed})
+	client.mu.Unlock()
+	return pc, reply, nil
+}
+
+// refillPoolBulk 启动时并发补齐池余量：稳态与池内首条连接同地址并发拨号
+// `PoolSize-当前条数` 条；首选地址失败时由 `buildRefillConnection` 回退其他候选，
+// 只入成功者；全部失败不重试，由补建循环后续补齐。
 func (client *Client) refillPoolBulk() {
 	client.mu.Lock()
 	if client.closed || len(client.pool)+client.inUse >= client.opt.PoolSize {
@@ -571,14 +616,14 @@ func (client *Client) refillPoolBulk() {
 		return
 	}
 
-	// 网络操作为主，在锁外并发拨号；只收集成功连接。
+	// 网络操作为主，在锁外并发拨号；首选失败自动回退其他候选，只收集成功连接。
 	resultsCh := make(chan *pooledConn, need)
 	var wg sync.WaitGroup
 	for i := 0; i < need; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			pc, _, err := client.buildPoolConn(known)
+			pc, _, err := client.buildRefillConnection(known)
 			if err != nil {
 				return
 			}
@@ -607,14 +652,23 @@ func (client *Client) refillPoolBulk() {
 	client.mu.Unlock()
 }
 
-// rebalancePool 每分钟对候选地址重新测速一次，把连接池切换到当前最快的服务器。
+// rebalancePool 对候选地址重新测速一次，把连接池切换到当前最快的服务器。
 //
-// 候选收敛为"池内地址 + 最近一次可达地址"，每 5 次触发一次全量探活刷新可达集；
-// 并发探活并按可达性、延迟排序（探活超时限制 5 秒），取首个可达地址为最快目标。
-// 池内连接已全部指向该地址时不作调整。否则并发预建 `PoolSize` 条指向最快地址的
-// 连接，全部失败保持现状；至少建成一条则先入池再关闭旧连接（先建后删，切换期间
-// 不出现空窗），未建满的余量由补建循环继续补齐。
-func (client *Client) rebalancePool() {
+// 候选收敛为"池内地址 + 最近一次可达地址"，每 5 次（或后台修复强制）触发一次全量探活
+// 刷新可达集；并发探活并按可达性、延迟排序，健康节点优先，降权节点兜底。池内连接已
+// 全部指向目标地址时不作调整；否则并发预建 `PoolSize` 条指向目标地址的连接，全部失败
+// 保持现状，至少建成一条则先入池再关闭旧连接（先建后删，切换期间不出现空窗），未建
+// 满的余量由补建循环继续补齐。
+//
+// 参数 `forceFullProbe` 为 `true` 时跳过候选收敛、直接全量探活配置地址池，用于池内节点
+// 连续空数据后的后台修复，尽快迁出数据不全节点；定时 tick 调用传 `false`。重平衡由
+// `rebalanceMu` 串行化，定时 tick 与后台修复并发到达时后者直接跳过，避免并发重建连接。
+func (client *Client) rebalancePool(forceFullProbe bool) {
+	if !client.rebalanceMu.TryLock() {
+		return
+	}
+	defer client.rebalanceMu.Unlock()
+
 	// 探活与拨号均为网络操作，在锁外执行，避免阻塞其他调用方借还连接。
 	client.mu.Lock()
 	if client.closed {
@@ -622,7 +676,7 @@ func (client *Client) rebalancePool() {
 		return
 	}
 	client.rebalanceTick++
-	fullProbe := client.rebalanceTick%5 == 0
+	fullProbe := forceFullProbe || client.rebalanceTick%5 == 0
 	poolAddrs := make([]string, 0, len(client.pool))
 	for _, pc := range client.pool {
 		duplicated := false
@@ -634,6 +688,13 @@ func (client *Client) rebalancePool() {
 		}
 		if !duplicated {
 			poolAddrs = append(poolAddrs, pc.addr)
+		}
+	}
+	// 快照已降权节点：测速排序时健康节点优先，降权节点仅在全部可达节点都被降权时兜底。
+	degraded := make(map[string]bool, len(client.health))
+	for addr, h := range client.health {
+		if h.emptyStreak >= healthDowngradeThreshold {
+			degraded[addr] = true
 		}
 	}
 	prevReachable := append([]string(nil), client.lastReachable...)
@@ -672,6 +733,8 @@ func (client *Client) rebalancePool() {
 	verified := client.probeReachable(candidates, probeTimeout)
 	var fastest string
 	var fastestLat time.Duration
+	// 健康节点优先选出最快者；全部可达节点均被降权时再回退到任意最快可达节点兜底。
+	healthyFastest, healthyLat := "", time.Duration(0)
 	latByAddr := make(map[string]time.Duration, len(verified))
 	reachable := make([]string, 0, len(verified))
 	for _, r := range verified {
@@ -679,11 +742,22 @@ func (client *Client) rebalancePool() {
 			continue
 		}
 		latByAddr[r.address] = r.latency
-		if fastest == "" {
-			fastest = r.address
-			fastestLat = r.latency
-		}
 		reachable = append(reachable, r.address)
+		if degraded[r.address] {
+			continue
+		}
+		if healthyFastest == "" || r.latency < healthyLat {
+			healthyFastest, healthyLat = r.address, r.latency
+		}
+	}
+	fastest, fastestLat = healthyFastest, healthyLat
+	if fastest == "" {
+		for _, r := range verified {
+			if r.reachable {
+				fastest, fastestLat = r.address, r.latency
+				break
+			}
+		}
 	}
 	client.mu.Lock()
 	if len(reachable) > 0 {
@@ -706,9 +780,10 @@ func (client *Client) rebalancePool() {
 	}
 
 	// 保守切换：新最快节点须显著优于当前池内节点（延迟低 30% 以上）才切换，
-	// 避免网络抖动导致 `fastest` 频繁漂移、每分钟重建连接（建连风暴）。当前池内
-	// 无连接（全部借出待归还）时视为无基准，直接切到最快可达地址。
-	if curAddr != "" {
+	// 避免网络抖动导致 `fastest` 频繁漂移、每分钟重建连接（建连风暴）；当前节点已被
+	// 健康度降权时跳过该延迟阈值，直接迁出数据不全节点。当前池内无连接（全部借出待
+	// 归还）时视为无基准，直接切到最快可达地址。
+	if curAddr != "" && !degraded[curAddr] {
 		if curLat, ok := latByAddr[curAddr]; ok && curLat > 0 && fastestLat >= curLat*7/10 {
 			// 新节点未显著更优：保持现有连接不动，请求继续稳定走当前节点。
 			return
@@ -824,9 +899,10 @@ func (client *Client) refillPool() {
 		client.mu.Unlock()
 		return
 	}
-	pc, _, err := client.buildPoolConn(address)
+	// 首选地址稳态复用；失败时回退其他可达候选，避免反复绑定同一故障域。首选与回退
+	// 候选本轮均不可达时不重试，等待下一轮补建循环。
+	pc, _, err := client.buildRefillConnection(address)
 	if err != nil {
-		// 单次补建失败不重试，等待下一轮；失败地址可能为瞬时不可达。
 		return
 	}
 	client.mu.Lock()

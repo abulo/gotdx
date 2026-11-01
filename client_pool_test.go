@@ -238,7 +238,7 @@ func TestRebalanceSwitchesToFastest(t *testing.T) {
 
 	// 关闭 A 模拟服务器不可达，触发重平衡。
 	aStop()
-	c.rebalancePool()
+	c.rebalancePool(false)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -270,7 +270,7 @@ func TestRebalanceKeepsFastestPool(t *testing.T) {
 	c.pool = []*pooledConn{pc1, pc2}
 	c.mu.Unlock()
 
-	c.rebalancePool()
+	c.rebalancePool(false)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
