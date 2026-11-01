@@ -86,6 +86,7 @@ type Client struct {
 	health              map[string]*nodeHealth   // 各地址连续空数据健康度统计，定向借出对降权节点跳过；池锁保护
 	heartbeatLatency    map[string]time.Duration // 各地址最近一次心跳往返耗时，供慢连接判定与池内分布比较；池锁保护
 	slow                map[string]bool          // 心跳识别出的慢连接标记，触发缩短重平衡周期与放宽切换阈值；池锁保护
+	lastActivityAt      time.Time                // 最近一次业务借出连接的时间，供心跳周期按活动度拉长；池锁保护
 	rebalanceMu         sync.Mutex               // 重平衡串行锁：避免定时 tick 与全空后台修复并发重建连接
 	rebalanceTick       int                      // 重平衡执行计数，每 5 次触发一次全量探活刷新可达集
 }
@@ -93,10 +94,11 @@ type Client struct {
 // pooledConn 为池内一条 TCP 连接：自带串行锁，保证该连接上的请求严格
 // 先写后读、帧边界不被并发破坏。
 type pooledConn struct {
-	conn  net.Conn
-	mu    sync.Mutex // 该连接串行锁
-	addr  string     // 实际连通的 `host:port` 地址
-	hello any        // 建连时模式握手的应答，仅建池返回首个应答时使用
+	conn       net.Conn
+	mu         sync.Mutex // 该连接串行锁
+	addr       string     // 实际连通的 `host:port` 地址
+	hello      any        // 建连时模式握手的应答，仅建池返回首个应答时使用
+	lastUsedAt time.Time  // 最近一次被业务请求借出的时间，供心跳跳过近期活跃连接；池锁保护
 }
 
 // fastPathConnRes 为建池快路径单条并发建连结果：连接、握手应答、错误与本次拨号+握手
@@ -323,6 +325,7 @@ func (client *Client) acquire() (*pooledConn, error) {
 			if pc.addr == client.lastDataAddr {
 				client.pool = append(client.pool[:i], client.pool[i+1:]...)
 				client.inUse++
+				client.markActivityLocked(pc)
 				return pc, nil
 			}
 		}
@@ -349,7 +352,18 @@ func (client *Client) acquire() (*pooledConn, error) {
 		}
 	}
 	client.inUse++
+	client.markActivityLocked(pc)
 	return pc, nil
+}
+
+// markActivityLocked 记录本次业务借出时间到客户端活动时间与连接自身时间戳；调用方须已
+// 持有池锁。近期活跃连接本轮心跳直接跳过，业务收发本身已证明连接存活，避免重复心跳流量。
+func (client *Client) markActivityLocked(pc *pooledConn) {
+	now := time.Now()
+	client.lastActivityAt = now
+	if pc != nil {
+		pc.lastUsedAt = now
+	}
 }
 
 // poolAppendLocked 将一条连接追加进池内并记录其实际地址（供池空时诊断兜底）；
@@ -458,6 +472,17 @@ func (client *Client) hasSlowNode() bool {
 	return false
 }
 
+// isIdle 报告客户端是否处于低流量空闲状态：最近一次业务借出超过空闲阈值即视为空闲，
+// 心跳周期拉长；从未发生业务借出时按活跃处理，保持默认心跳频率保证存活探测。
+func (client *Client) isIdle() bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.lastActivityAt.IsZero() {
+		return false
+	}
+	return time.Since(client.lastActivityAt) > idleActivityThreshold
+}
+
 // refreshReachableLocked 把本次测得耗时的候选并入可达列表并按耗时升序重排：历史可达
 // 地址保留，新测得样本覆盖旧耗时；未测到耗时的历史地址排到已知耗时样本之后。调用方须
 // 已持有池锁。排序只影响内部候选落点，不改变公开 API 与默认行为。
@@ -526,12 +551,12 @@ func (client *Client) discard(pc *pooledConn) {
 	}
 }
 
-// refillLoop 按固定间隔触发补建与心跳；重平衡周期随池内是否存在慢连接动态切换：健康
-// 状态维持 1 分钟，识别出慢节点后缩短到 15 秒，收到停止信号（`Disconnect` 关闭 `done`）
-// 时退出。
+// refillLoop 按固定间隔触发补建；心跳周期随业务活动度在 30s/60s 之间切换，重平衡周期
+// 随慢连接状态在 1min/15s 之间切换；收到停止信号（`Disconnect` 关闭 `done`）时退出。
 func (client *Client) refillLoop() {
 	refillTicker := time.NewTicker(time.Second)
-	heartbeatTicker := time.NewTicker(30 * time.Second)
+	heartbeatInterval := heartbeatIntervalActive
+	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	rebalanceInterval := defaultRebalanceInterval
 	rebalanceTicker := time.NewTicker(rebalanceInterval)
 	defer refillTicker.Stop()
@@ -554,6 +579,16 @@ func (client *Client) refillLoop() {
 			client.refillPool()
 		case <-heartbeatTicker.C:
 			client.heartbeatPool()
+			// 心跳后按活动度调整下一轮周期：空闲长驻拉长到 60s，恢复业务访问回到 30s。
+			wantHeartbeat := heartbeatIntervalActive
+			if client.isIdle() {
+				wantHeartbeat = heartbeatIntervalIdle
+			}
+			if wantHeartbeat != heartbeatInterval {
+				heartbeatTicker.Stop()
+				heartbeatTicker = time.NewTicker(wantHeartbeat)
+				heartbeatInterval = wantHeartbeat
+			}
 		case <-rebalanceTicker.C:
 			client.rebalancePool(false)
 			// 重平衡后按慢连接状态调整下一轮周期：有慢节点缩短到 15 秒，恢复健康回到 1 分钟。
@@ -573,6 +608,16 @@ func (client *Client) refillLoop() {
 // heartbeatTimeout 为单次应用层心跳的读写超时：僵死连接检测要快，避免占用
 // 连接与补建窗口太久，正常连接一次心跳仅一个往返耗时。
 const heartbeatTimeout = 2 * time.Second
+
+// 心跳周期按活动度分档：活跃状态保持改动前的 30 秒；低流量长驻超过空闲阈值后拉长到
+// 60 秒，减少后台心跳流量与锁争用。近期被业务请求用过的连接本轮直接跳过心跳，业务
+// 收发本身已证明连接存活。
+const (
+	heartbeatIntervalActive = 30 * time.Second
+	heartbeatIntervalIdle   = 60 * time.Second
+	idleActivityThreshold   = 2 * time.Minute
+	heartbeatFreshWindow    = 2 * time.Minute
+)
 
 // 重平衡阈值与周期的保守默认值：健康网络下与改动前行为完全一致，仅在池内出现慢节点时
 // 放宽切换阈值、缩短重平衡周期，避免慢连接长时间驻留。
@@ -623,17 +668,29 @@ const (
 // 避免单次网络抖动直接杀连接。健康节点本轮心跳后清除其慢标记。
 func (client *Client) heartbeatPool() {
 	client.mu.Lock()
-	conns := append([]*pooledConn(nil), client.pool...)
-	poolAddrs := make([]string, 0, len(conns))
-	for _, pc := range conns {
+	type heartbeatSnapshot struct {
+		pc     *pooledConn
+		usedAt time.Time
+	}
+	snaps := make([]heartbeatSnapshot, 0, len(client.pool))
+	poolAddrs := make([]string, 0, len(client.pool))
+	for _, pc := range client.pool {
+		snaps = append(snaps, heartbeatSnapshot{pc: pc, usedAt: pc.lastUsedAt})
 		poolAddrs = append(poolAddrs, pc.addr)
 	}
 	client.mu.Unlock()
 
 	slowDetected := false
-	for _, pc := range conns {
+	for _, snap := range snaps {
+		pc := snap.pc
 		// 心跳只在连接空闲时进行：`TryLock` 失败表示该连接正在执行业务请求。
 		if !pc.mu.TryLock() {
+			continue
+		}
+		// 近期被业务请求使用过的连接跳过本轮心跳：业务收发本身已证明连接存活，避免
+		// 对活跃连接重复发送握手帧、争抢连接锁；时间戳在池锁内快照，避免与借出路径竞争。
+		if !snap.usedAt.IsZero() && time.Since(snap.usedAt) < heartbeatFreshWindow {
+			pc.mu.Unlock()
 			continue
 		}
 		started := time.Now()
