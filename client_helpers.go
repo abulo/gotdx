@@ -16,15 +16,15 @@ var ErrMarketCodeCount = errors.New("market code count error")
 // 串行锁执行收发，解析成功后归还池内；收发或解析失败时由池销毁该条并后台补建。
 //
 // 协议对象若实现 `proto.EmptyResponseAware` 且最近一次应答为空数据（部分扩展站对较早
-// 日期数据不全），执行层自动换节点重试：先换池内另一条连接（轮询游标大概率借出不同
-// 服务器），仍空则从配置地址池换地址临时建连再查（优先最近一次命中数据的服务器）。
+// 日期数据不全），执行层自动换节点重试：先换池内另一条连接（定向优先下大概率借出
+// 不同服务器），仍空则从配置地址池换地址临时建连再查（优先最近一次命中数据的服务器）。
 // 重试仍空（该日期确实无成交）时返回首次应答，保持"一次调用一次结果"的语义。
 //
 // 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；池内暂无连接（未连接或全部被
 // 借出/丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
 func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 	var zero T
-	reply, err := client.executeOnce(protocol)
+	reply, addr, err := client.executeOnce(protocol)
 	if err != nil {
 		return zero, err
 	}
@@ -33,7 +33,8 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 		// 池内重试：换池内另一条连接（多地址池下大概率指向不同服务器）。
 		// 复用同一协议对象串行执行，多次解析覆盖应答，最终返回最后一次结果。
 		for i := 0; i < 2; i++ {
-			if r2, err2 := client.executeOnce(protocol); err2 == nil && !retrier.IsEmptyResponse() {
+			if r2, addr2, err2 := client.executeOnce(protocol); err2 == nil && !retrier.IsEmptyResponse() {
+				client.setDataAddr(addr2)
 				return r2, nil
 			}
 		}
@@ -48,23 +49,28 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 				candidates = append(candidates, addr)
 			}
 		}
-		for _, addr := range candidates {
-			if r3, err3 := client.executeTemporary(addr, protocol); err3 == nil && !retrier.IsEmptyResponse() {
-				client.setDataAddr(addr)
+		for _, a := range candidates {
+			if r3, err3 := client.executeTemporary(a, protocol); err3 == nil && !retrier.IsEmptyResponse() {
+				client.setDataAddr(a)
 				return r3, nil
 			}
 		}
+		return reply, nil
 	}
+	// 非空响应（或未声明空感知的协议）：本次连接即为可用节点，记录供定向优先
+	// 与空重试复用，让后续请求稳定落回该服务器。
+	client.setDataAddr(addr)
 	return reply, nil
 }
 
 // executeOnce 执行单次协议请求-响应：借出连接、收发、解析并归还/销毁连接，不包含
-// 空响应重试逻辑，由 `execute` 编排调用。
-func (client *Client) executeOnce[T any](protocol proto.Protocol[T]) (T, error) {
+// 空响应重试逻辑，由 `execute` 编排调用。返回值依次为应答、本次借出连接的实际地址
+// 与错误（无错误时为 `nil`）。
+func (client *Client) executeOnce[T any](protocol proto.Protocol[T]) (T, string, error) {
 	var zero T
 	pc, err := client.acquire()
 	if err != nil {
-		return zero, err
+		return zero, "", err
 	}
 	pc.mu.Lock()
 	header, payload, err := client.exchange(pc.conn, protocol)
@@ -75,11 +81,11 @@ func (client *Client) executeOnce[T any](protocol proto.Protocol[T]) (T, error) 
 		// 收发或解析失败后该连接帧边界不可信，销毁并交后台补建。
 		client.discard(pc)
 		pc.mu.Unlock()
-		return zero, err
+		return zero, "", err
 	}
 	pc.mu.Unlock()
 	client.release(pc)
-	return protocol.Response(), nil
+	return protocol.Response(), pc.addr, nil
 }
 
 func makeCode6(code string) [6]byte {

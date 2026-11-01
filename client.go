@@ -286,16 +286,29 @@ func removeAddress(addresses []string, target string) []string {
 	return out
 }
 
-// acquire 从池内借出一条连接（轮询游标递增），调用方随后须持该连接串行锁执行请求。
+// acquire 从池内借出一条连接，调用方随后须持该连接串行锁执行请求。
 //
 // 借出即从池中移出：在途连接不再参与心跳巡检与重平衡切换，避免巡检或切换误关正在
 // 使用的连接导致在途请求中断。池已关闭或池内暂无连接（未连接或连接全部被借出/丢弃
 // 待补建）时返回"无可用连接"错误。
+//
+// 定向优先：存在"最近成功响应的服务器"（`lastDataAddr`）时，优先借出同地址连接，
+// 让请求稳定落在已验证可用的节点上（模拟老库固定单节点的稳定性）；池内无该地址
+// （已被重平衡切换或丢弃）时回退轮询。
 func (client *Client) acquire() (*pooledConn, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if client.closed || len(client.pool) == 0 {
 		return nil, errors.New("no available connection")
+	}
+	if client.lastDataAddr != "" {
+		for i, pc := range client.pool {
+			if pc.addr == client.lastDataAddr {
+				client.pool = append(client.pool[:i], client.pool[i+1:]...)
+				client.inUse++
+				return pc, nil
+			}
+		}
 	}
 	idx := client.next % len(client.pool)
 	client.next++
@@ -581,13 +594,17 @@ func (client *Client) rebalancePool() {
 	probeTimeout := min(client.timeout(), slowProbeTimeout)
 	verified := client.probeReachable(candidates, probeTimeout)
 	var fastest string
+	var fastestLat time.Duration
+	latByAddr := make(map[string]time.Duration, len(verified))
 	reachable := make([]string, 0, len(verified))
 	for _, r := range verified {
 		if !r.reachable {
 			continue
 		}
+		latByAddr[r.address] = r.latency
 		if fastest == "" {
 			fastest = r.address
+			fastestLat = r.latency
 		}
 		reachable = append(reachable, r.address)
 	}
@@ -595,10 +612,24 @@ func (client *Client) rebalancePool() {
 	if len(reachable) > 0 {
 		client.lastReachable = reachable
 	}
+	curAddr := ""
+	if len(client.pool) > 0 {
+		curAddr = client.pool[0].addr
+	}
 	client.mu.Unlock()
 	if fastest == "" {
 		// 收敛候选全部不可达：保持现有连接不动。
 		return
+	}
+
+	// 保守切换：新最快节点须显著优于当前池内节点（延迟低 30% 以上）才切换，
+	// 避免网络抖动导致 `fastest` 频繁漂移、每分钟重建连接（建连风暴）。当前池内
+	// 无连接（全部借出待归还）时视为无基准，直接切到最快可达地址。
+	if curAddr != "" {
+		if curLat, ok := latByAddr[curAddr]; ok && curLat > 0 && fastestLat >= curLat*7/10 {
+			// 新节点未显著更优：保持现有连接不动，请求继续稳定走当前节点。
+			return
+		}
 	}
 
 	client.mu.Lock()
