@@ -164,6 +164,42 @@ flowchart TD
 6. **保活与自愈**：应用层心跳活跃连接 30 秒一轮、空闲连接 60 秒一轮（近 2 分钟有业务活动则跳过），2 秒短超时判定僵死连接并丢弃；TCP keepalive 15 秒兜底无握手协议的 MAC 模式。任一条连接被丢弃后，后台补建循环每秒检查池容量自动补齐，补建失败回退其他候选。
 7. **释放**：`Disconnect` 关闭池内全部连接并停止后台循环，可重复调用。
 
+### 空数据处理覆盖范围
+
+判空换节点在唯一执行入口 `execute` 内实现，四个入口的全部行情/数据查询方法最终都汇聚到该入口（上层方法只做幂等建连与转包），因此**天然全覆盖**，无需逐函数接入：
+
+```mermaid
+flowchart TD
+    M["主行情 New"] --> S["Stock* / Get* 组合层"]
+    E["扩展市场 NewEx"] --> S2["Ex* / ExGet* 组合层"]
+    MAC["MAC 主站 NewMAC"] --> S3["MAC* 上层<br/>幂等 ConnectMAC + 转包"]
+    MEX["MAC 扩展站 NewMACEx"] --> S4["Goods*<br/>全部转包 Ex*/MAC*"]
+    S --> B["底层协议方法<br/>Get* / ExGet* / GetMAC*"]
+    S2 --> B
+    S3 --> B
+    S4 --> B
+    B --> EX["execute 唯一入口"]
+    EX -->|"应答空<br/>Count==0"| R["并行探测换节点 ≤2 次<br/>健康度降权 + 强制重平衡"]
+    EX -->|"非空"| OK["setDataAddr 定向<br/>健康度清零"]
+```
+
+判空规则（`isEmptyReply`）：应答结构带 `Count uint16` 字段且为零（历史、分时、逐笔类）或带 `Returned uint32` 字段且为零（MAC 偏移 K 线）即判定为空；反射只读单个字段、开销可忽略，新增函数只要走 `execute` 就自动获得换节点能力。
+
+| 类别 | 覆盖 | 说明 |
+| --- | --- | --- |
+| 主行情查询（`Stock*` / `Get*`） | 覆盖 | 直接或转包后 `return client.execute(obj)` |
+| 扩展市场查询（`Ex*` / `ExGet*`） | 覆盖 | 含 `ExHistoryTransaction` |
+| MAC 查询（`MAC*` / `GetMAC*`） | 覆盖 | 上层 = 幂等 `ConnectMAC` + 转包底层 |
+| MAC 扩展站（`Goods*`） | 覆盖 | 全部转包 `Ex*` / `MAC*` 查询 |
+| 文件下载（`DownloadFullFile` 等） | 不适用 | 空块是"文件下载完毕"标志（`Size==0` 结束），换节点破坏下载流 |
+| 表格拉取（`ExGetTable` 等） | 不适用 | `Count==0` 表示表格已读完，是自身的终止条件 |
+| 原始调试（`RawDataReply` 类） | 自动免疫 | 应答无 `Count` / `Returned` 字段，判空跳过，不误触发 |
+| 订阅（`Subscriber`） | 不适用 | 长连接流式模型，不走 `execute` |
+| 非结构体返回（`uint16` / `uint32` / `[]float64`） | 自动免疫 | 判空反射对非结构体返回 false |
+| 连接与管理（`Connect` / `Disconnect` 等） | — | 无"数据为空"概念 |
+
+单连接模式（`WithSingleConnectionMode`）或关闭换节点（`DisableEmptyNodeSwitch`）时，空应答直接返回首次结果，行为对齐老库固定单节点。
+
 ### 四个入口
 
 四个入口的构造与建连方式一致，差异在握手机制与能力域：
