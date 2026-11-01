@@ -2,6 +2,7 @@ package gotdx
 
 import (
 	"errors"
+	"reflect"
 
 	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
@@ -14,9 +15,14 @@ var ErrMarketCodeCount = errors.New("market code count error")
 // execute 完成一次协议请求-响应流程：从池内借出一条连接（借出即移出池）、持该连接
 // 串行锁执行收发，解析成功后归还池内；收发或解析失败时由池销毁该条并后台补建。
 //
-// 成功后记录本次借出连接地址为"最近成功响应的服务器"（`lastDataAddr`），后续借出
+// 解析成功后记录本次借出连接地址为"最近成功响应的服务器"（`lastDataAddr`），后续借出
 // 定向优先同地址连接，让请求稳定落回已验证节点；该地址仅在重平衡切换或连接丢弃后
-// 自然失效。解析成功即记录，不区分应答内容。
+// 自然失效。
+//
+// 空数据换节点：应答为空数据（通用判空规则见 `isEmptyReply`）时解除定向并换池内另一条
+// 连接重试（最多 2 次），命中非空后重新定向；重试仍空（该日期确实无成交）返回首次应答。
+// 部分服务器对较早历史日期数据不全，多地址池下换节点可命中数据完整的服务器（老库固定
+// 单节点必然命中其节点，新库以换节点重试达成同等稳定）。
 //
 // 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；池内暂无连接（未连接或全部被
 // 借出/丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
@@ -26,9 +32,44 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 	if err != nil {
 		return zero, err
 	}
+	if isEmptyReply(reply) {
+		// 空数据换节点重试：解除对当前节点的定向，换池内另一条连接再查。
+		// 命中非空后重新定向到该节点；重试仍空返回首次应答（该日期确实无成交）。
+		client.clearDataAddr(addr)
+		for i := 0; i < 2; i++ {
+			if r2, addr2, err2 := client.executeOnce(protocol); err2 == nil {
+				if !isEmptyReply(r2) {
+					client.setDataAddr(addr2)
+					return r2, nil
+				}
+			}
+		}
+		return reply, nil
+	}
 	// 本次连接即为可用节点，记录供定向优先复用，让后续请求稳定落回该服务器。
 	client.setDataAddr(addr)
 	return reply, nil
+}
+
+// isEmptyReply 通过反射报告协议应答是否为空数据：历史、分时、逐笔类协议的应答
+// 结构统一携带 `Count uint16` 字段，`Count` 为零即无任何记录；MAC 偏移 K 线应答
+// 无 `Count` 字段，按 `Returned` 字段判空。反射仅读取一个 `uint16` 字段，单次
+// 开销可忽略。应答类型不含上述字段时按非空处理（不触发换节点）。
+func isEmptyReply(v any) bool {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return false
+	}
+	if f := rv.FieldByName("Count"); f.IsValid() && f.Kind() == reflect.Uint16 {
+		return f.Uint() == 0
+	}
+	if f := rv.FieldByName("Returned"); f.IsValid() && f.Kind() == reflect.Uint32 {
+		return f.Uint() == 0
+	}
+	return false
 }
 
 // executeOnce 执行单次协议请求-响应：借出连接、收发、解析并归还/销毁连接，由
@@ -68,6 +109,16 @@ func (client *Client) setDataAddr(addr string) {
 	defer client.mu.Unlock()
 	if addr != "" {
 		client.lastDataAddr = addr
+	}
+}
+
+// clearDataAddr 清除对指定地址的定向记录：该地址返回空数据（或已失效）时调用，
+// 使后续借出回退轮询，避免请求继续固定在数据不全的节点上。
+func (client *Client) clearDataAddr(addr string) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.lastDataAddr == addr {
+		client.lastDataAddr = ""
 	}
 }
 
