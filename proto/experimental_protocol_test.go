@@ -268,7 +268,7 @@ func TestExExperimentalMessagesBuildRequestAndParseResponse(t *testing.T) {
 		if err := binary.Write(buf, binary.LittleEndian, uint32(0)); err != nil {
 			t.Fatal(err)
 		}
-		if err := binary.Write(buf, binary.LittleEndian, uint16(1)); err != nil {
+		if err := binary.Write(buf, binary.LittleEndian, uint16(2)); err != nil {
 			t.Fatal(err)
 		}
 		if err := binary.Write(buf, binary.LittleEndian, uint32(20260411)); err != nil {
@@ -280,6 +280,21 @@ func TestExExperimentalMessagesBuildRequestAndParseResponse(t *testing.T) {
 		writeFloat32(t, buf, 10.5)
 		writeFloat32(t, buf, 1200.5)
 		if err := binary.Write(buf, binary.LittleEndian, uint32(123)); err != nil {
+			t.Fatal(err)
+		}
+		if err := binary.Write(buf, binary.LittleEndian, uint32(0)); err != nil {
+			t.Fatal(err)
+		}
+		// 第二根为实际返回的 K 线，首根仅作为昨收基准被剔除。
+		if err := binary.Write(buf, binary.LittleEndian, uint32(20260411)); err != nil {
+			t.Fatal(err)
+		}
+		writeFloat32(t, buf, 12)
+		writeFloat32(t, buf, 13)
+		writeFloat32(t, buf, 10)
+		writeFloat32(t, buf, 10.5)
+		writeFloat32(t, buf, 2000)
+		if err := binary.Write(buf, binary.LittleEndian, uint32(456)); err != nil {
 			t.Fatal(err)
 		}
 		if err := binary.Write(buf, binary.LittleEndian, uint32(0)); err != nil {

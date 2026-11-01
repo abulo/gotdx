@@ -691,6 +691,8 @@ func NewExGetKLine2(req *ExGetKLine2Request) *ExGetKLine2 {
 	obj.reqHeader.PacketType = 0x01
 	obj.reqHeader.Method = KMSG_EXKLINE2
 	if req != nil {
+		// 多请求一根 K 线，作为首根昨收基准，响应时剔除，保证返回条数与请求一致。
+		req.Count = req.Count + 1
 		obj.applyRequest(req)
 	}
 	return obj
@@ -736,6 +738,8 @@ func (obj *ExGetKLine2) ParseResponse(header *RespHeader, data []byte) error {
 	obj.reply.Count = binary.LittleEndian.Uint16(data[40:42])
 	// K 线条目区起始偏移。
 	pos := 42
+	// 滚动保存上一根收盘价，作为本根昨收基准。
+	var preCloseRaw float64 // 昨收盘价
 	for i := uint16(0); i < obj.reply.Count; i++ {
 		// 每根 K 线步长 32 字节，先校验剩余长度防止越界。
 		if pos+32 > len(data) {
@@ -757,8 +761,21 @@ func (obj *ExGetKLine2) ParseResponse(header *RespHeader, data []byte) error {
 			Amount: float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+20 : pos+24]))),
 			Vol:    binary.LittleEndian.Uint32(data[pos+24 : pos+28]),
 		}
-		obj.reply.List = append(obj.reply.List, item)
+		// 本根昨收/前收取上一根收盘价；随后把基准更新为本根收盘，供下一根使用。
+		item.PreClose = float64(preCloseRaw)
+		preCloseRaw = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+16 : pos+20])))
+		item.RiseRate = item.GetRiseRate()
+		item.RisePrice = item.GetRisePrice()
 		pos += 32
+		// 首根仅用于取得昨收基准，不进入最终 K 线列表。
+		if i == 0 {
+			continue
+		}
+		obj.reply.List = append(obj.reply.List, item)
+	}
+	// 首根作为昨收基准已剔除；服务器可能返回 0 条，避免无符号下溢。
+	if obj.reply.Count > 0 {
+		obj.reply.Count--
 	}
 	return nil
 }

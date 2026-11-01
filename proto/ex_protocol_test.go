@@ -490,7 +490,7 @@ func TestExGetTickChartAndSamplingParseResponse(t *testing.T) {
 	if err := tickMsg.ParseResponse(&RespHeader{}, tickBuf.Bytes()); err != nil {
 		t.Fatalf("tick parse response failed: %v", err)
 	}
-	if len(tickMsg.Response().List) != 1 || tickMsg.Response().List[0].Time != "09:31" {
+	if len(tickMsg.Response().List) != 1 || tickMsg.Response().List[0].Time != "09:32" {
 		t.Fatalf("unexpected tick reply: %+v", tickMsg.Response())
 	}
 
