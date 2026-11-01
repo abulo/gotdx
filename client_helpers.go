@@ -2,6 +2,7 @@ package gotdx
 
 import (
 	"errors"
+	"math/rand"
 
 	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
@@ -42,6 +43,69 @@ func makeCode6(code string) [6]byte {
 	var out [6]byte
 	copy(out[:], code)
 	return out
+}
+
+// executeTemporary 在指定地址上临时建立连接（含模式握手）执行一次协议请求后立即关闭，
+// 用于空数据重试兜底：池内连接指向的服务器对部分历史日期数据不全时，临时换地址再查。
+// 临时连接不进入池，执行结束即释放，避免影响池容量与心跳/重平衡巡检。
+func (client *Client) executeTemporary[T any](addr string, protocol proto.Protocol[T]) (T, error) {
+	var zero T
+	pc, _, err := client.buildPoolConn(addr)
+	if err != nil {
+		return zero, err
+	}
+	defer func() { _ = pc.conn.Close() }()
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	header, payload, err := client.exchange(pc.conn, protocol)
+	if err == nil {
+		err = protocol.ParseResponse(header, payload)
+	}
+	if err != nil {
+		return zero, err
+	}
+	return protocol.Response(), nil
+}
+
+// randomOtherAddress 从配置地址池中随机返回一个与 `current` 不同的地址；地址池仅含
+// `current`（或无其他地址）时返回空字符串。随机化避免重试固定落在同一波动窗口。
+func (client *Client) randomOtherAddress(current string) string {
+	others := make([]string, 0, 4)
+	for _, a := range client.addresses() {
+		if a != current {
+			others = append(others, a)
+		}
+	}
+	if len(others) == 0 {
+		return ""
+	}
+	return others[rand.Intn(len(others))]
+}
+
+// recordDataAddr 记录当前池地址为"最近命中数据的服务器"：历史查询成功返回非空数据后
+// 调用，空数据重试时优先该地址，模拟老库固定好节点的稳定行为。
+func (client *Client) recordDataAddr() {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.lastAddr != "" {
+		client.lastDataAddr = client.lastAddr
+	}
+}
+
+// dataAddr 返回最近一次命中数据的服务器地址；无记录时返回空字符串。
+func (client *Client) dataAddr() string {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return client.lastDataAddr
+}
+
+// setDataAddr 显式记录指定地址为最近命中数据的服务器（临时重试命中后回写）。
+func (client *Client) setDataAddr(addr string) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if addr != "" {
+		client.lastDataAddr = addr
+	}
 }
 
 func makeCode9(code string) [9]byte {

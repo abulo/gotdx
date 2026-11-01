@@ -174,13 +174,50 @@ func (client *Client) ExGetKLine2(category uint8, code string, period uint16, st
 //
 // `date` 为交易日期，按 `YYYYMMDD` 八位正整数传入；`category` 为扩展市场类别编号；
 // `code` 为标的代码，内部按 43 字节定长编码、尾部补零。连接或协议执行失败时返回错误。
+//
+// 部分扩展站对较早日期数据不全：首次应答成功但无数据时，按"池内另一条连接 → 最近一次
+// 命中数据的服务器 → 配置地址池随机地址"顺序重试，尽量命中数据完整的服务器（老库固定
+// 单节点必然命中其节点数据，新库以定向+换节点重试达成同等稳定性）。重试仍空（该日期
+// 确实无成交）时返回首次应答。
 func (client *Client) ExGetHistoryTransaction(date uint32, category uint8, code string) (*proto.ExGetHistoryTransactionReply, error) {
-	obj := proto.NewExGetHistoryTransaction(&proto.ExGetHistoryTransactionRequest{
-		Date:     date,
-		Category: category,
-		Code:     makeFixed43(code),
-	})
-	return client.execute(obj)
+	newObj := func() *proto.ExGetHistoryTransaction {
+		return proto.NewExGetHistoryTransaction(&proto.ExGetHistoryTransactionRequest{
+			Date:     date,
+			Category: category,
+			Code:     makeFixed43(code),
+		})
+	}
+	reply, err := client.execute(newObj())
+	if err != nil {
+		return nil, err
+	}
+	if reply.Count == 0 || len(reply.List) == 0 {
+		// 空数据重试一：换池内另一条连接（多地址池下大概率指向不同服务器）。
+		// 每次用新协议对象（新 `SeqID`），避免复用对象重复标识被服务器拒绝。
+		if retry, retryErr := client.execute(newObj()); retryErr == nil && (retry.Count > 0 || len(retry.List) > 0) {
+			client.recordDataAddr()
+			return retry, nil
+		}
+		// 空数据重试二：优先最近一次命中数据的服务器；无记录或失败时从配置地址池
+		// 随机换地址临时建连再查。临时连接用完即关，不污染池。
+		candidates := make([]string, 0, 3)
+		if last := client.dataAddr(); last != "" {
+			candidates = append(candidates, last)
+		}
+		for i := 0; i < 2; i++ {
+			other := client.randomOtherAddress(client.CurrentAddress())
+			if other != "" {
+				candidates = append(candidates, other)
+			}
+		}
+		for _, addr := range candidates {
+			if retry, retryErr := client.executeTemporary(addr, newObj()); retryErr == nil && (retry.Count > 0 || len(retry.List) > 0) {
+				client.setDataAddr(addr)
+				return retry, nil
+			}
+		}
+	}
+	return reply, nil
 }
 
 // ExGetTickChart 查询扩展市场标的的当日分时图，返回各分钟的现价、均价与成交量采样点。

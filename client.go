@@ -71,6 +71,7 @@ type Client struct {
 	closed              bool          // 池已关闭标记，关闭后拒绝借出
 	inUse               int           // 借出中的连接计数，供补建判断容量时与池内数量合计
 	lastAddr            string        // 池内最近一条连接的实际地址，供池空时诊断兜底
+	lastDataAddr        string        // 最近一次历史查询命中数据的服务器地址，空数据重试优先使用
 	next                int           // 轮询游标：借出连接时按此下标取池内连接并自增
 	done                chan struct{} // 补建循环停止信号，`Disconnect` 时关闭
 	refill              sync.Once     // 补建循环只启动一次
