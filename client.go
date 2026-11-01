@@ -66,9 +66,11 @@ func NewMACEx(opts ...Option) *Client {
 // 按轮询分散到池内各连接：连接之间并行、单连接上的请求由该连接内部串行化，调用方无需自行加锁。
 type Client struct {
 	opt                 *Options      // 深拷贝后的连接配置
-	pool                []*pooledConn // 连接池：每条连接独立串行锁，连接之间并行
+	pool                []*pooledConn // 连接池：仅存放空闲连接，借出的连接移出池、归还时放回
 	mu                  sync.Mutex    // 池管理锁：保护借还、补建、关闭与池状态
 	closed              bool          // 池已关闭标记，关闭后拒绝借出
+	inUse               int           // 借出中的连接计数，供补建判断容量时与池内数量合计
+	lastAddr            string        // 池内最近一条连接的实际地址，供池空时诊断兜底
 	next                int           // 轮询游标：借出连接时按此下标取池内连接并自增
 	done                chan struct{} // 补建循环停止信号，`Disconnect` 时关闭
 	refill              sync.Once     // 补建循环只启动一次
@@ -93,7 +95,8 @@ type pooledConn struct {
 // CurrentAddress 返回当前池内首条连接实际连通的服务器 `host:port` 地址。
 //
 // 本方法无业务入参；客户端指针或内部选项为空时返回空字符串；已建立连接池时返回首条连接的
-// 实际地址，未拨号时返回配置的单点地址。
+// 实际地址；池内无空闲连接（全部借出待归还）时返回最近一次入池连接的实际地址，未拨号时
+// 返回配置的单点地址。
 func (client *Client) CurrentAddress() string {
 	if client == nil || client.opt == nil {
 		return ""
@@ -102,6 +105,9 @@ func (client *Client) CurrentAddress() string {
 	defer client.mu.Unlock()
 	if len(client.pool) > 0 {
 		return client.pool[0].addr
+	}
+	if client.lastAddr != "" {
+		return client.lastAddr
 	}
 	return client.opt.TCPAddress
 }
@@ -281,7 +287,9 @@ func removeAddress(addresses []string, target string) []string {
 
 // acquire 从池内借出一条连接（轮询游标递增），调用方随后须持该连接串行锁执行请求。
 //
-// 池已关闭或池内暂无连接（未连接或连接全部被丢弃待补建）时返回"无可用连接"错误。
+// 借出即从池中移出：在途连接不再参与心跳巡检与重平衡切换，避免巡检或切换误关正在
+// 使用的连接导致在途请求中断。池已关闭或池内暂无连接（未连接或连接全部被借出/丢弃
+// 待补建）时返回"无可用连接"错误。
 func (client *Client) acquire() (*pooledConn, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -290,20 +298,49 @@ func (client *Client) acquire() (*pooledConn, error) {
 	}
 	idx := client.next % len(client.pool)
 	client.next++
-	return client.pool[idx], nil
+	pc := client.pool[idx]
+	client.pool = append(client.pool[:idx], client.pool[idx+1:]...)
+	client.inUse++
+	return pc, nil
+}
+
+// poolAppendLocked 将一条连接追加进池内并记录其实际地址（供池空时诊断兜底）；
+// 调用方须已持有池锁。
+func (client *Client) poolAppendLocked(pc *pooledConn) {
+	client.pool = append(client.pool, pc)
+	client.lastAddr = pc.addr
+}
+
+// release 将借出的连接归还池内，供后续请求复用；池已关闭或池容量已满（含借出中的
+// 连接）时关闭该连接释放资源，由补建循环维持池容量。
+func (client *Client) release(pc *pooledConn) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.inUse--
+	if client.closed || len(client.pool)+client.inUse >= client.opt.PoolSize {
+		_ = pc.conn.Close()
+		return
+	}
+	client.poolAppendLocked(pc)
 }
 
 // discard 关闭并移出池内指定连接；关闭错误忽略。运行期断连由此路径清理，
-// 后续由补建循环补齐池容量。
+// 后续由补建循环补齐池容量；借出中的连接（不在池内）同样关闭并回收借出计数。
 func (client *Client) discard(pc *pooledConn) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	_ = pc.conn.Close()
+	found := false
 	for i, p := range client.pool {
 		if p == pc {
 			client.pool = append(client.pool[:i], client.pool[i+1:]...)
+			found = true
 			break
 		}
+	}
+	if !found && client.inUse > 0 {
+		// 借出中的连接被销毁：回收借出计数，容量缺口由补建循环补齐。
+		client.inUse--
 	}
 }
 
@@ -429,7 +466,7 @@ func (client *Client) heartbeatConn(pc *pooledConn) error {
 // `PoolSize-当前条数` 条，只入成功者；全部失败不重试，由补建循环后续补齐。
 func (client *Client) refillPoolBulk() {
 	client.mu.Lock()
-	if client.closed || len(client.pool) >= client.opt.PoolSize {
+	if client.closed || len(client.pool)+client.inUse >= client.opt.PoolSize {
 		client.mu.Unlock()
 		return
 	}
@@ -437,7 +474,7 @@ func (client *Client) refillPoolBulk() {
 	if len(client.pool) > 0 {
 		known = client.pool[0].addr
 	}
-	need := client.opt.PoolSize - len(client.pool)
+	need := client.opt.PoolSize - len(client.pool) - client.inUse
 	client.mu.Unlock()
 	if known == "" || need <= 0 {
 		return
@@ -469,8 +506,8 @@ func (client *Client) refillPoolBulk() {
 		return
 	}
 	for pc := range resultsCh {
-		if len(client.pool) < client.opt.PoolSize {
-			client.pool = append(client.pool, pc)
+		if len(client.pool)+client.inUse < client.opt.PoolSize {
+			client.poolAppendLocked(pc)
 		} else {
 			// 池已满（补建循环同时入池）时关闭多余连接。
 			_ = pc.conn.Close()
@@ -619,6 +656,9 @@ func (client *Client) rebalancePool() {
 	// 先建后删：新连接入池后再关闭旧连接，切换期间池始终可借出。
 	old := client.pool
 	client.pool = newConns
+	if len(newConns) > 0 {
+		client.lastAddr = newConns[0].addr
+	}
 	client.mu.Unlock()
 	for _, pc := range old {
 		_ = pc.conn.Close()
@@ -626,10 +666,11 @@ func (client *Client) rebalancePool() {
 }
 
 // refillPool 补建一条缺失连接：先快速判断是否需要补建，需要时在锁外拨号与
-// 握手（网络操作不阻塞借还），成功后加锁入池；池已关闭或已满时关闭多余连接。
+// 握手（网络操作不阻塞借还），成功后加锁入池；池已关闭或容量已满（池内空闲
+// 连接与借出中的连接合计达到 `PoolSize`）时关闭多余连接。
 func (client *Client) refillPool() {
 	client.mu.Lock()
-	if client.closed || len(client.pool) >= client.opt.PoolSize {
+	if client.closed || len(client.pool)+client.inUse >= client.opt.PoolSize {
 		client.mu.Unlock()
 		return
 	}
@@ -660,8 +701,8 @@ func (client *Client) refillPool() {
 			return
 		}
 		client.mu.Lock()
-		if !client.closed && len(client.pool) < client.opt.PoolSize {
-			client.pool = append(client.pool, pc)
+		if !client.closed && len(client.pool)+client.inUse < client.opt.PoolSize {
+			client.poolAppendLocked(pc)
 		} else {
 			_ = pc.conn.Close()
 		}
@@ -674,8 +715,8 @@ func (client *Client) refillPool() {
 		return
 	}
 	client.mu.Lock()
-	if !client.closed && len(client.pool) < client.opt.PoolSize {
-		client.pool = append(client.pool, pc)
+	if !client.closed && len(client.pool)+client.inUse < client.opt.PoolSize {
+		client.poolAppendLocked(pc)
 	} else {
 		_ = pc.conn.Close()
 	}
@@ -858,7 +899,7 @@ func (client *Client) buildPoolLocked() (any, error) {
 					}
 					client.mu.Lock()
 					if !client.closed && len(client.pool) < client.opt.PoolSize {
-						client.pool = append(client.pool, rr.pc)
+						client.poolAppendLocked(rr.pc)
 					} else {
 						_ = rr.pc.conn.Close()
 					}
@@ -866,7 +907,7 @@ func (client *Client) buildPoolLocked() (any, error) {
 				}
 			}(remaining)
 		}
-		client.pool = append(client.pool, r.pc)
+		client.poolAppendLocked(r.pc)
 		client.startRefillLoop()
 		return r.reply, nil
 	}
@@ -880,7 +921,7 @@ func (client *Client) buildPoolLocked() (any, error) {
 		return nil, fmt.Errorf("no connection to any candidate")
 	}
 	client.lastReachable = []string{first.addr}
-	client.pool = append(client.pool, first)
+	client.poolAppendLocked(first)
 	client.startRefillLoop()
 	return reply, nil
 }

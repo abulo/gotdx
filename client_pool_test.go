@@ -354,3 +354,56 @@ func TestHeartbeatDiscardsStaleConn(t *testing.T) {
 		t.Fatal("stale conn still in pool after heartbeat")
 	}
 }
+
+// TestPoolAcquireRemovesReleaseRestores 验证借还语义：借出即移出池（池内减少、
+// 借出计数增加），归还后回池（池内恢复、借出计数归零），容量（池内+借出）守恒。
+// 该语义保证在途连接不参与心跳巡检与重平衡切换，避免切换误关在途连接。
+func TestPoolAcquireRemovesReleaseRestores(t *testing.T) {
+	addr, stop := fakeTDXServer(t, 0)
+	defer stop()
+
+	c := New(WithTCPAddress(addr), WithTimeoutSec(5), WithTCPAddressPool(), WithPoolSize(3))
+	if _, err := c.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer c.Disconnect()
+
+	// 等待补建循环补满池容量。
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		c.mu.Lock()
+		filled := len(c.pool)
+		c.mu.Unlock()
+		if filled == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pool was not refilled in time")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// 借出两条：池内剩 1、借出计数 2，容量合计保持 3。
+	pc1, err := c.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc2, err := c.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	if len(c.pool) != 1 || c.inUse != 2 {
+		t.Fatalf("after acquire: pool=%d inUse=%d, want pool=1 inUse=2", len(c.pool), c.inUse)
+	}
+	c.mu.Unlock()
+
+	// 归还两条：池内恢复 3、借出计数归零。
+	c.release(pc1)
+	c.release(pc2)
+	c.mu.Lock()
+	if len(c.pool) != 3 || c.inUse != 0 {
+		t.Fatalf("after release: pool=%d inUse=%d, want pool=3 inUse=0", len(c.pool), c.inUse)
+	}
+	c.mu.Unlock()
+}

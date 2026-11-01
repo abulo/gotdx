@@ -11,11 +11,11 @@ import (
 // `makeStocks`、`makeExStocks` 在配对前校验长度时返回。
 var ErrMarketCodeCount = errors.New("market code count error")
 
-// execute 完成一次协议请求-响应流程：从池内借出一条连接、持该连接串行锁执行收发，
-// 解析响应后归还（连接出错时由池销毁该条并后台补建）。
+// execute 完成一次协议请求-响应流程：从池内借出一条连接（借出即移出池）、持该连接串行锁
+// 执行收发，解析成功后归还池内；收发或解析失败时由池销毁该条并后台补建。
 //
 // 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；池内暂无连接（未连接或全部被
-// 丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
+// 借出/丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
 func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 	var zero T
 	pc, err := client.acquire()
@@ -34,6 +34,7 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 		return zero, err
 	}
 	pc.mu.Unlock()
+	client.release(pc)
 	return protocol.Response(), nil
 }
 
