@@ -12,12 +12,55 @@ import (
 // `makeStocks`、`makeExStocks` 在配对前校验长度时返回。
 var ErrMarketCodeCount = errors.New("market code count error")
 
-// execute 完成一次协议请求-响应流程：从池内借出一条连接（借出即移出池）、持该连接串行锁
-// 执行收发，解析成功后归还池内；收发或解析失败时由池销毁该条并后台补建。
+// execute 完成一次协议请求-响应流程：从池内借出一条连接（借出即移出池）、持该连接
+// 串行锁执行收发，解析成功后归还池内；收发或解析失败时由池销毁该条并后台补建。
+//
+// 协议对象若实现 `proto.EmptyResponseAware` 且最近一次应答为空数据（部分扩展站对较早
+// 日期数据不全），执行层自动换节点重试：先换池内另一条连接（轮询游标大概率借出不同
+// 服务器），仍空则从配置地址池换地址临时建连再查（优先最近一次命中数据的服务器）。
+// 重试仍空（该日期确实无成交）时返回首次应答，保持"一次调用一次结果"的语义。
 //
 // 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；池内暂无连接（未连接或全部被
 // 借出/丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
 func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
+	var zero T
+	reply, err := client.executeOnce(protocol)
+	if err != nil {
+		return zero, err
+	}
+	// 空响应换节点重试：仅对声明了 `EmptyResponseAware` 的协议生效，其余协议单次执行。
+	if retrier, ok := any(protocol).(proto.EmptyResponseAware); ok && retrier.IsEmptyResponse() {
+		// 池内重试：换池内另一条连接（多地址池下大概率指向不同服务器）。
+		// 复用同一协议对象串行执行，多次解析覆盖应答，最终返回最后一次结果。
+		for i := 0; i < 2; i++ {
+			if r2, err2 := client.executeOnce(protocol); err2 == nil && !retrier.IsEmptyResponse() {
+				return r2, nil
+			}
+		}
+		// 临时换地址重试：优先最近一次命中数据的服务器，其次从配置地址池随机换
+		// 地址临时建连（最多两个随机候选）。临时连接用完即关，不污染池。
+		candidates := make([]string, 0, 3)
+		if addr := client.dataAddr(); addr != "" {
+			candidates = append(candidates, addr)
+		}
+		for i := 0; i < 2; i++ {
+			if addr := client.randomOtherAddress(client.CurrentAddress()); addr != "" {
+				candidates = append(candidates, addr)
+			}
+		}
+		for _, addr := range candidates {
+			if r3, err3 := client.executeTemporary(addr, protocol); err3 == nil && !retrier.IsEmptyResponse() {
+				client.setDataAddr(addr)
+				return r3, nil
+			}
+		}
+	}
+	return reply, nil
+}
+
+// executeOnce 执行单次协议请求-响应：借出连接、收发、解析并归还/销毁连接，不包含
+// 空响应重试逻辑，由 `execute` 编排调用。
+func (client *Client) executeOnce[T any](protocol proto.Protocol[T]) (T, error) {
 	var zero T
 	pc, err := client.acquire()
 	if err != nil {
@@ -80,16 +123,6 @@ func (client *Client) randomOtherAddress(current string) string {
 		return ""
 	}
 	return others[rand.Intn(len(others))]
-}
-
-// recordDataAddr 记录当前池地址为"最近命中数据的服务器"：历史查询成功返回非空数据后
-// 调用，空数据重试时优先该地址，模拟老库固定好节点的稳定行为。
-func (client *Client) recordDataAddr() {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	if client.lastAddr != "" {
-		client.lastDataAddr = client.lastAddr
-	}
 }
 
 // dataAddr 返回最近一次命中数据的服务器地址；无记录时返回空字符串。
