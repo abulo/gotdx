@@ -101,7 +101,7 @@ func (obj *ExGetTickChart) ParseResponse(header *RespHeader, data []byte) error 
 		}
 		// 前 2 字节为分钟数`uint16`；随后现价、均价各 4 字节 `float32`，
 		// 成交量 4 字节`uint32`；条目末尾 4 字节为填充区。
-		minutes := binary.LittleEndian.Uint16(data[pos : pos+2])
+		minutes := binary.LittleEndian.Uint16(data[pos:pos+2]) + 1
 		// 分钟数换算为 `HH:MM`；对 24 取模以兼容跨日溢出。
 		obj.reply.List = append(obj.reply.List, ExTickChartData{
 			Time:  fmt.Sprintf("%02d:%02d", (minutes/60)%24, minutes%60),
@@ -213,7 +213,7 @@ func (obj *ExGetHistoryTickChart) ParseResponse(header *RespHeader, data []byte)
 		if pos+18 > len(data) {
 			return fmt.Errorf("invalid ex history tick chart item %d", i)
 		}
-		minutes := binary.LittleEndian.Uint16(data[pos : pos+2])
+		minutes := binary.LittleEndian.Uint16(data[pos:pos+2]) + 1
 		obj.reply.List = append(obj.reply.List, ExTickChartData{
 			Time:  fmt.Sprintf("%02d:%02d", (minutes/60)%24, minutes%60),
 			Price: float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+2 : pos+6]))),
