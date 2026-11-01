@@ -80,8 +80,9 @@ type Client struct {
 	ex                  *Client
 	decimalPoints       map[uint8]map[string]int8
 	decimalPointsLoaded map[uint8]bool
-	lastReachable       []string // 最近一次探活确认可达的地址列表，供重平衡与补建收敛候选
-	rebalanceTick       int      // 重平衡执行计数，每 5 次触发一次全量探活刷新可达集
+	lastReachable       []string                 // 最近一次探活确认可达的地址列表，按测得耗时升序，供重平衡与补建收敛候选
+	addrLatency         map[string]time.Duration // 各地址最近一次建连测得的拨号+握手总耗时，供候选排序与后台预比较；池锁保护
+	rebalanceTick       int                      // 重平衡执行计数，每 5 次触发一次全量探活刷新可达集
 }
 
 // pooledConn 为池内一条 TCP 连接：自带串行锁，保证该连接上的请求严格
@@ -91,6 +92,15 @@ type pooledConn struct {
 	mu    sync.Mutex // 该连接串行锁
 	addr  string     // 实际连通的 `host:port` 地址
 	hello any        // 建连时模式握手的应答，仅建池返回首个应答时使用
+}
+
+// fastPathConnRes 为建池快路径单条并发建连结果：连接、握手应答、错误与本次拨号+握手
+// 总耗时；耗时用于候选排序与后台预比较，不参与公开 API。
+type fastPathConnRes struct {
+	pc      *pooledConn
+	reply   any
+	err     error
+	elapsed time.Duration
 }
 
 // CurrentAddress 返回当前池内首条连接实际连通的服务器 `host:port` 地址。
@@ -323,6 +333,53 @@ func (client *Client) acquire() (*pooledConn, error) {
 func (client *Client) poolAppendLocked(pc *pooledConn) {
 	client.pool = append(client.pool, pc)
 	client.lastAddr = pc.addr
+}
+
+// recordAddrLatencyLocked 记录指定地址最近一次建连的拨号+握手总耗时；空地址或非正
+// 耗时忽略。调用方须已持有池锁，映射按需惰性初始化。
+func (client *Client) recordAddrLatencyLocked(addr string, elapsed time.Duration) {
+	if addr == "" || elapsed <= 0 {
+		return
+	}
+	if client.addrLatency == nil {
+		client.addrLatency = make(map[string]time.Duration)
+	}
+	client.addrLatency[addr] = elapsed
+}
+
+// refreshReachableLocked 把本次测得耗时的候选并入可达列表并按耗时升序重排：历史可达
+// 地址保留，新测得样本覆盖旧耗时；未测到耗时的历史地址排到已知耗时样本之后。调用方须
+// 已持有池锁。排序只影响内部候选落点，不改变公开 API 与默认行为。
+func (client *Client) refreshReachableLocked(measured map[string]time.Duration) {
+	if len(measured) == 0 {
+		return
+	}
+	merged := make(map[string]time.Duration, len(measured)+len(client.lastReachable))
+	for _, addr := range client.lastReachable {
+		merged[addr] = client.addrLatency[addr]
+	}
+	for addr, elapsed := range measured {
+		merged[addr] = elapsed
+	}
+	addrs := make([]string, 0, len(merged))
+	for addr := range merged {
+		addrs = append(addrs, addr)
+	}
+	sort.Slice(addrs, func(i, j int) bool {
+		di, dj := merged[addrs[i]], merged[addrs[j]]
+		// 未知耗时（零值）视为最慢，排在已知样本之后；同耗时按地址字典序保证顺序稳定。
+		if di == 0 {
+			di = time.Hour
+		}
+		if dj == 0 {
+			dj = time.Hour
+		}
+		if di != dj {
+			return di < dj
+		}
+		return addrs[i] < addrs[j]
+	})
+	client.lastReachable = addrs
 }
 
 // release 将借出的连接归还池内，供后续请求复用；池已关闭或池容量已满（含借出中的
@@ -611,6 +668,12 @@ func (client *Client) rebalancePool() {
 	client.mu.Lock()
 	if len(reachable) > 0 {
 		client.lastReachable = reachable
+		// 同步刷新各地址测得耗时，供快路径后台预比较与补建候选排序使用。
+		for _, r := range verified {
+			if r.reachable {
+				client.recordAddrLatencyLocked(r.address, r.latency)
+			}
+		}
 	}
 	curAddr := ""
 	if len(client.pool) > 0 {
@@ -889,26 +952,23 @@ func (client *Client) buildPoolLocked() (any, error) {
 	// 波动网络下无需等待首地址超时即可命中可达服务器，随机化避免固定前几个候选
 	// 同时落在同一波动窗口时整体判负（原库为串行逐候选拨号，分布窄正因固定单地址；
 	// 新库以候选冗余对冲波动，正常网络下各候选毫秒级拨号，随机不损失速度）。
-	// 只同步建 1 条返回，余量由补建循环异步补齐；其余候选的并发结果由清理
-	// goroutine 收集：成功连接入池复用（不超 `PoolSize`），失败关闭。
-	type connRes struct {
-		pc    *pooledConn
-		reply any
-		err   error
-	}
+	// 只同步建 1 条返回，余量由补建循环异步补齐；其余候选的并发结果由后台收尾
+	// goroutine 收集：记录各候选拨号+握手总耗时并排序，与当前落点预比较，显著更优时
+	// 提前切换到最快候选，不必等到 1 分钟重平衡才完成首次收敛。
 	limit := 3
 	if len(addresses) < limit {
 		limit = len(addresses)
 	}
-	resultsCh := make(chan connRes, limit)
+	resultsCh := make(chan fastPathConnRes, limit)
 	for _, i := range rand.Perm(len(addresses))[:limit] {
 		addr := addresses[i]
 		go func() {
 			// 快路径拨号用短超时：行情服务器正常拨号在几十毫秒量级，偶发 1 秒级
 			// 慢响应是服务器间歇波动，直接排除而非踩中样本（原库固定连稳定服务器，
 			// 分布窄正源于此）；全部短超时失败转慢路径探活兜底。
+			started := time.Now()
 			pc, reply, err := client.buildPoolConnWithTimeout(addr, fastDialTimeout)
-			resultsCh <- connRes{pc: pc, reply: reply, err: err}
+			resultsCh <- fastPathConnRes{pc: pc, reply: reply, err: err, elapsed: time.Since(started)}
 		}()
 	}
 	consumed := 0
@@ -921,24 +981,11 @@ func (client *Client) buildPoolLocked() (any, error) {
 			}
 			continue
 		}
-		// 收到第一个成功即返回；剩余并发结果由清理 goroutine 收尾。
+		// 收到第一个成功即返回；剩余并发结果由后台收尾 goroutine 做耗时排序与预比较。
 		if remaining := limit - consumed; remaining > 0 {
-			go func(remaining int) {
-				for j := 0; j < remaining; j++ {
-					rr := <-resultsCh
-					if rr.err != nil {
-						continue
-					}
-					client.mu.Lock()
-					if !client.closed && len(client.pool) < client.opt.PoolSize {
-						client.poolAppendLocked(rr.pc)
-					} else {
-						_ = rr.pc.conn.Close()
-					}
-					client.mu.Unlock()
-				}
-			}(remaining)
+			go client.collectFastPathResults(resultsCh, remaining, r)
 		}
+		client.recordAddrLatencyLocked(r.pc.addr, r.elapsed)
 		client.poolAppendLocked(r.pc)
 		client.startRefillLoop()
 		return r.reply, nil
@@ -965,6 +1012,126 @@ func (client *Client) startRefillLoop() {
 		client.done = make(chan struct{})
 	}
 	client.refill.Do(func() { go client.refillLoop() })
+}
+
+// collectFastPathResults 收尾建池快路径剩余并发建连结果：收集成功者、记录拨号+握手
+// 总耗时并按耗时排序沉淀可达候选，再与当前落点后台预比较。
+//
+// 方案决策：同步返回仍由首个成功者决定，不增加 `Connect` 返回延迟；耗时比较与可能的
+// 切换全部放后台，避免等待慢候选超时拖慢建连；比较只使用快路径已测得的样本，不额外
+// 发起一轮全量探活。切换阈值与重平衡一致（新候选延迟低 30% 以上才动），避免网络抖动
+// 导致开局频繁漂移；候选排序只影响内部落点，不改变公开 API 与默认行为。
+//
+// 参数 `resultsCh` 为快路径结果通道，参数 `remaining` 为尚待收取的结果条数，参数
+// `winner` 为已同步入池的首个成功者。未显著更优时保持现状，把余量连接按容量补入池中；
+// 显著更优时先建后删切换到最快候选，旧连接与其他地址余量连接关闭回收。
+func (client *Client) collectFastPathResults(resultsCh <-chan fastPathConnRes, remaining int, winner fastPathConnRes) {
+	collected := make([]fastPathConnRes, 0, remaining)
+	for j := 0; j < remaining; j++ {
+		rr := <-resultsCh
+		if rr.err == nil {
+			collected = append(collected, rr)
+		}
+	}
+
+	client.mu.Lock()
+	if client.closed {
+		client.mu.Unlock()
+		for _, rr := range collected {
+			_ = rr.pc.conn.Close()
+		}
+		return
+	}
+	// 汇总首个成功者与余量成功者的测得耗时，刷新耗时记录与按耗时升序的可达候选列表。
+	measured := map[string]time.Duration{}
+	if winner.err == nil {
+		measured[winner.pc.addr] = winner.elapsed
+	}
+	for _, rr := range collected {
+		measured[rr.pc.addr] = rr.elapsed
+		client.recordAddrLatencyLocked(rr.pc.addr, rr.elapsed)
+	}
+	client.refreshReachableLocked(measured)
+	curAddr := ""
+	if len(client.pool) > 0 {
+		curAddr = client.pool[0].addr
+	}
+	curLat := client.addrLatency[curAddr]
+	fastest, fastestLat := "", time.Duration(0)
+	for addr, elapsed := range measured {
+		if fastest == "" || elapsed < fastestLat {
+			fastest, fastestLat = addr, elapsed
+		}
+	}
+	client.mu.Unlock()
+
+	// 后台预比较：最快候选与当前落点为同一地址，或新候选未显著更优（未低 30%）时保持
+	// 现状；否则提前切换，消除开局抽签后等待 1 分钟重平衡才迁移慢节点的窗口。
+	shouldSwitch := fastest != "" && fastest != curAddr && curLat > 0 && fastestLat < curLat*7/10
+	if !shouldSwitch {
+		client.mu.Lock()
+		for _, rr := range collected {
+			if !client.closed && len(client.pool)+client.inUse < client.opt.PoolSize {
+				client.poolAppendLocked(rr.pc)
+			} else {
+				_ = rr.pc.conn.Close()
+			}
+		}
+		client.mu.Unlock()
+		return
+	}
+
+	// 先建后删：并发预建指向最快候选的连接；全部失败保持现状并回收已建成连接，余量
+	// 连接按现状补入池中。
+	poolSize := client.opt.PoolSize
+	var (
+		newMu    sync.Mutex
+		newConns = make([]*pooledConn, 0, poolSize)
+		wg       sync.WaitGroup
+	)
+	for i := 0; i < poolSize; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pc, _, err := client.buildPoolConn(fastest)
+			if err != nil {
+				return
+			}
+			newMu.Lock()
+			newConns = append(newConns, pc)
+			newMu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	client.mu.Lock()
+	if client.closed || len(newConns) == 0 {
+		client.mu.Unlock()
+		for _, pc := range newConns {
+			_ = pc.conn.Close()
+		}
+		client.mu.Lock()
+		for _, rr := range collected {
+			if !client.closed && len(client.pool)+client.inUse < client.opt.PoolSize {
+				client.poolAppendLocked(rr.pc)
+			} else {
+				_ = rr.pc.conn.Close()
+			}
+		}
+		client.mu.Unlock()
+		return
+	}
+	old := client.pool
+	client.pool = newConns
+	client.lastAddr = newConns[0].addr
+	client.mu.Unlock()
+	for _, pc := range old {
+		_ = pc.conn.Close()
+	}
+	// 切换后余量连接指向其他地址，不再保留，统一关闭回收。
+	for _, rr := range collected {
+		_ = rr.pc.conn.Close()
+	}
 }
 
 // probeResult 为一次探活验证的结果：`address` 为 `host:port` 地址，`reachable` 表示
