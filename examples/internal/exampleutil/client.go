@@ -55,6 +55,22 @@ func NewExClientForHost(host string) *gotdx.Client {
 	)
 }
 
+// NewExSingleConnectionClient 构造单连接模式的扩展站客户端：连接池大小为 1 并关闭空数据
+// 换节点，适用于单并发、追求窄尾延迟的调用方；断连自愈（心跳判死、后台补建）仍然保留。
+//
+// 本函数无业务入参；内置扩展站地址列表首条作为主地址，其余进入候选池，拨号与读写超时
+// 固定为 6 秒。构造过程不拨号、不返回错误，连接在首次请求时按需建立；返回的客户端用完
+// 应调用 `Disconnect` 释放连接，拨号、登录握手与协议错误由后续查询方法返回。
+func NewExSingleConnectionClient() *gotdx.Client {
+	primary, pool := splitHosts(gotdx.ExHostAddresses())
+	return gotdx.NewEx(
+		gotdx.WithExTCPAddress(primary),
+		gotdx.WithExTCPAddressPool(pool...),
+		gotdx.WithTimeoutSec(6),
+		gotdx.WithSingleConnectionMode(),
+	)
+}
+
 // NewUnifiedClient 构造同时配置主站与扩展站两套候选地址的统一客户端。
 //
 // 本函数无业务入参；主站、扩展站各自取内置地址列表的首条为主地址、其余为候选池，拨号与读写超时

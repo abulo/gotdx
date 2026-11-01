@@ -24,7 +24,8 @@ var ErrMarketCodeCount = errors.New("market code count error")
 // 空数据健康度，并并行探测池内其余连接取首个非空应答（重试条数沿用原最多 2 次上限）；
 // 命中非空后重新定向并清零该节点空数据计数；并行探测仍空（该日期确实无成交）返回首次
 // 应答。部分服务器对较早历史日期数据不全，多地址池下换节点可命中数据完整的服务器
-// （老库固定单节点必然命中其节点，新库以换节点重试达成同等稳定）。
+// （老库固定单节点必然命中其节点，新库以换节点重试达成同等稳定）。`Options.DisableEmptyNodeSwitch`
+// 开启后跳过上述换节点流程，空应答直接返回首次结果。
 //
 // 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；池内暂无连接（未连接或全部被
 // 借出/丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
@@ -35,6 +36,11 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 		return zero, err
 	}
 	if isEmptyReply(reply) {
+		// 单连接模式或显式关闭换节点：空应答直接返回首次结果，不解除定向、不并行探测
+		// 其他连接、不累计健康度，行为对齐老库固定单节点；断连自愈仍由心跳与补建负责。
+		if client.opt.DisableEmptyNodeSwitch {
+			return reply, nil
+		}
 		// 空数据：解除对当前节点的定向并计入健康度，随后并行探测其余连接。
 		client.clearDataAddr(addr)
 		client.recordNodeHealthEmpty(addr)

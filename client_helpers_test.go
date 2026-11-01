@@ -223,3 +223,67 @@ func TestAcquireSkipsDegradedTarget(t *testing.T) {
 		t.Fatalf("recovered target must be preferred, acquired %s", pc.addr)
 	}
 }
+
+// emptyCountReply 为测试用应答桩，携带 `Count` 字段供 `isEmptyReply` 判空。
+type emptyCountReply struct {
+	Count uint16
+}
+
+// emptyCountProtocol 是空应答协议桩：固定请求体，解析后 `Count` 恒为 0，用于验证关闭换
+// 节点模式下空应答被直接返回、不触发并行探测。
+type emptyCountProtocol struct {
+	reply emptyCountReply
+}
+
+// BuildRequest 返回固定请求负载 `0x5a`，编码恒成功。
+func (*emptyCountProtocol) BuildRequest() ([]byte, error) {
+	return []byte{0x5a}, nil
+}
+
+// ParseResponse 置空 `Count`，负载内容本桩不使用，解码恒成功。
+func (p *emptyCountProtocol) ParseResponse(_ *proto.RespHeader, _ []byte) error {
+	p.reply.Count = 0
+	return nil
+}
+
+// Response 返回最近一次应答桩。
+func (p *emptyCountProtocol) Response() emptyCountReply { return p.reply }
+
+// TestExecuteSkipsEmptyRetryWhenSwitchDisabled 验证关闭空数据换节点后，空应答在首次请求后
+// 直接返回，不再并行探测池内其他连接（单连接模式对齐老库固定节点行为）。
+func TestExecuteSkipsEmptyRetryWhenSwitchDisabled(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+
+	client := New(WithTimeoutSec(1), WithEmptyNodeSwitchDisabled(true))
+	client.pool = []*pooledConn{{conn: clientConn}}
+
+	requestCount := make(chan int, 1)
+	go func() {
+		count := 0
+		for {
+			request := make([]byte, 1)
+			if _, err := io.ReadFull(serverConn, request); err != nil {
+				break
+			}
+			count++
+			_, _ = serverConn.Write(fakeRespHeader(0, 0, 0))
+		}
+		requestCount <- count
+	}()
+
+	reply, err := client.execute(&emptyCountProtocol{})
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if reply.Count != 0 {
+		t.Fatalf("disabled switch must return first empty reply, got Count=%d", reply.Count)
+	}
+	_ = clientConn.Close()
+	if got := <-requestCount; got != 1 {
+		t.Fatalf("disabled switch must send exactly one request, got %d", got)
+	}
+}

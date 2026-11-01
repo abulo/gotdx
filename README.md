@@ -133,6 +133,22 @@ defer client.Disconnect()
 
 运行期某条连接被丢弃（网络错误、响应帧损坏、心跳判死）后，后台补建循环每秒检查池容量并自动补齐；`Disconnect` 关闭池内全部连接并停止补建。`CurrentAddress` 返回池内首条连接实际连通的服务器地址。各查询方法保持原有签名，可安全并发调用。
 
+### 单连接模式
+
+单并发、追求窄尾延迟的调用方可以开启显式单连接模式：`WithSingleConnectionMode()` 同时把池大小置为 1 并关闭空数据换节点，全程复用一条长连接，获得接近老库固定单连接的稳定延迟分布；断连自愈（心跳判死、后台补建、重平衡）仍然保留。只想关闭空数据换节点、保留多连接池时，使用 `WithEmptyNodeSwitchDisabled(true)`，两个选项相互独立；默认关闭，不传时保持三连接池与空数据并行换节点行为。
+
+```go
+client := gotdx.NewEx(
+	gotdx.WithSingleConnectionMode(), // 池大小 1 + 关闭空数据换节点
+)
+if _, err := client.ConnectEx(); err != nil {
+	log.Fatal(err)
+}
+defer client.Disconnect()
+```
+
+可运行示例见 `examples/ex_single_connection`。
+
 ### 行情订阅
 
 `Client.Subscriber()` 返回的 `Subscriber` 通用订阅工厂，对任意数据源建立"轮询 diff 推送"订阅：内部按间隔轮询拉取快照（复用各查询方法请求协议，无需新增推送协议），快照变化时回调处理函数。首次订阅立即推送一次建立基线，此后仅在变化时推送；处理函数返回 `false` 或调用返回的取消函数即停止订阅。
@@ -290,6 +306,7 @@ fmt.Println(stats.Hits, stats.EmptyHits, stats.Fetches, stats.SourceErrors, stat
 | 扩展市场单只/批量报价 | `go run ./examples/ex_quote` / `go run ./examples/ex_quotes` / `go run ./examples/ex_quotes2` |
 | 扩展市场列表与分类 | `go run ./examples/ex_count` / `go run ./examples/ex_list` / `go run ./examples/ex_paged_list` / `go run ./examples/ex_category_list` |
 | 扩展市场 K 线、分时、历史成交 | `go run ./examples/ex_kline` / `go run ./examples/ex_tick` / `go run ./examples/ex_history` |
+| 扩展市场单连接模式 | `go run ./examples/ex_single_connection` |
 | 扩展试验与补充协议 | `go run ./examples/ex_list_extra` / `go run ./examples/ex_board_list` / `go run ./examples/ex_experiment_2487` / `go run ./examples/ex_experiment_2488` / `go run ./examples/ex_kline2` / `go run ./examples/ex_mapping_2562` |
 | 扩展市场表格 | `go run ./examples/ex_table` / `go run ./examples/ex_table_detail` |
 | TDX 商品语义入口 | `go run ./examples/goods_overview` |
@@ -341,6 +358,7 @@ fmt.Println(stats.Hits, stats.EmptyHits, stats.Fetches, stats.SourceErrors, stat
 - `examples/ex_mapping_2562`
 - `examples/goods_overview`
 - `examples/ex_history`
+- `examples/ex_single_connection`
 - `examples/ex_tick`
 - `examples/ex_server_info`
 - `examples/ex_sampling`

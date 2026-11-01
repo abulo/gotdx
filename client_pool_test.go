@@ -407,3 +407,39 @@ func TestPoolAcquireRemovesReleaseRestores(t *testing.T) {
 	}
 	c.mu.Unlock()
 }
+
+// TestSingleConnectionModeConfig 验证 `WithSingleConnectionMode` 同时把池大小置为 1 并关闭
+// 空数据换节点；默认构造保持三连接池与换节点开启。
+func TestSingleConnectionModeConfig(t *testing.T) {
+	c := New(WithSingleConnectionMode())
+	if c.opt.PoolSize != 1 {
+		t.Fatalf("single connection mode must set PoolSize=1, got %d", c.opt.PoolSize)
+	}
+	if !c.opt.DisableEmptyNodeSwitch {
+		t.Fatal("single connection mode must disable empty node switch")
+	}
+
+	def := New()
+	if def.opt.PoolSize != _defaultPoolSize {
+		t.Fatalf("default pool size must be %d, got %d", _defaultPoolSize, def.opt.PoolSize)
+	}
+	if def.opt.DisableEmptyNodeSwitch {
+		t.Fatal("empty node switch must be enabled by default")
+	}
+}
+
+// TestEmptyNodeSwitchFlagIndependent 验证换节点开关可独立于池大小控制：单独关闭换节点时
+// 池大小保持传入值，显式传 `false` 恢复默认换节点行为。
+func TestEmptyNodeSwitchFlagIndependent(t *testing.T) {
+	multi := New(WithPoolSize(3), WithEmptyNodeSwitchDisabled(true))
+	if multi.opt.PoolSize != 3 || !multi.opt.DisableEmptyNodeSwitch {
+		t.Fatalf("independent flag must keep pool size 3 and disable switch, got pool=%d disabled=%v",
+			multi.opt.PoolSize, multi.opt.DisableEmptyNodeSwitch)
+	}
+
+	enabled := New(WithPoolSize(2), WithEmptyNodeSwitchDisabled(false))
+	if enabled.opt.PoolSize != 2 || enabled.opt.DisableEmptyNodeSwitch {
+		t.Fatalf("explicit enabled flag must keep switch on, got pool=%d disabled=%v",
+			enabled.opt.PoolSize, enabled.opt.DisableEmptyNodeSwitch)
+	}
+}
