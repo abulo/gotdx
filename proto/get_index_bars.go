@@ -39,7 +39,6 @@ type GetIndexBarsReply struct {
 // IndexBar 表示一根指数 K 线，含开高低收、成交量额、时间及上涨/下跌家数。
 type IndexBar struct {
 	PreClose  float64   // 昨收点位；协议价格按千分刻度存储，解析时已除以 1000 还原。
-	LastClose float64   // 前收点位，沿用上一根收盘价，口径同昨收。
 	RisePrice float64   // 涨跌价（收盘点位减昨收点位）。
 	RiseRate  float64   // 涨跌幅（百分数，已乘以 100）。
 	Open      float64   // 开盘点位，千分刻度还原后的浮点值。
@@ -148,7 +147,6 @@ func (obj *GetIndexBars) ParseResponse(header *RespHeader, data []byte) error {
 
 		// 价格刻度为千分之一，昨收沿用上一根收盘价。
 		bar.PreClose = float64(last) / 1000.0
-		bar.LastClose = float64(last) / 1000.0
 		bar.Open = float64(open) / 1000.0
 		bar.Close = float64(close) / 1000.0
 		bar.High = float64(high) / 1000.0

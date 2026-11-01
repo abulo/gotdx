@@ -1246,7 +1246,6 @@ func applyDecimalPointToSecurityQuotes(items []proto.SecurityQuote, decimals map
 		items[i].Close *= factor
 		items[i].Price *= factor
 		items[i].PreClose *= factor
-		items[i].LastClose *= factor
 		items[i].Open *= factor
 		items[i].High *= factor
 		items[i].Low *= factor

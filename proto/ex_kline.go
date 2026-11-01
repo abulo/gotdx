@@ -50,7 +50,6 @@ type ExKLineItem struct {
 	Amount    float64   // 成交额，由 `float32` 还原，单位元。
 	Vol       uint32    // 成交量，`uint32`，计数单位由市场类型约定。
 	PreClose  float64   // 本根昨收价，取上一根收盘价。
-	LastClose float64   // 前收价，与昨收基准同源。
 	RisePrice float64   // 涨跌价，收盘价相对昨收基准的差值，单位元。
 	RiseRate  float64   // 涨跌幅，收盘价相对昨收基准的百分比，单位 %。
 }
@@ -143,7 +142,6 @@ func (obj *ExGetKLine) ParseResponse(header *RespHeader, data []byte) error {
 		}
 		// 本根昨收/前收取上一根收盘价；随后把基准更新为本根收盘，供下一根使用。
 		item.PreClose = float64(preCloseRaw)
-		item.LastClose = float64(preCloseRaw)
 		preCloseRaw = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[pos+16 : pos+20])))
 		item.RiseRate = item.GetRiseRate()
 		item.RisePrice = item.GetRisePrice()

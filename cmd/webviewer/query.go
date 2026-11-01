@@ -2888,7 +2888,7 @@ func runMethod(def methodDef, params map[string]string) (queryPayload, map[strin
 				return queryPayload{}, err
 			}
 			return queryPayload{
-				columns: []string{"datetime", "last", "open", "high", "low", "close", "vol", "amount"},
+				columns: []string{"datetime", "pre_close", "open", "high", "low", "close", "vol", "amount"},
 				rows:    rowsFromExKLine(reply.List),
 				raw:     reply.List,
 			}, nil
@@ -2965,7 +2965,7 @@ func runMethod(def methodDef, params map[string]string) (queryPayload, map[strin
 				return queryPayload{}, err
 			}
 			return queryPayload{
-				columns: []string{"datetime", "open", "high", "low", "close", "vol", "amount"},
+				columns: []string{"datetime", "pre_close", "open", "high", "low", "close", "vol", "amount"},
 				rows:    rowsFromExKLine(reply.List),
 				raw:     reply,
 			}, nil

@@ -40,7 +40,6 @@ type GetSecurityBarsReply struct {
 // SecurityBar 表示一根 K 线，包含开高低收、成交量额、涨跌与时间等信息。
 type SecurityBar struct {
 	PreClose  float64   // 昨收价，单位为元，由上一根收盘价滚动推算。
-	LastClose float64   // 前收价，当前与 PreClose 取同一基准值。
 	Open      float64   // 开盘价，单位为元；线上整数按千分比压缩（×1000），此处已还原为浮点。
 	Close     float64   // 收盘价，单位为元；线上整数按千分比压缩（×1000），此处已还原为浮点。
 	High      float64   // 最高价，单位为元；线上整数按千分比压缩（×1000），此处已还原为浮点。
@@ -177,7 +176,6 @@ func (obj *GetSecurityBars) ParseResponse(header *RespHeader, data []byte) error
 			DateTime: dateTime,
 		}
 		bar.PreClose = float64(preCloseRaw) / 1000.0
-		bar.LastClose = float64(preCloseRaw) / 1000.0
 		preCloseRaw = closeRaw // 记录本根收盘价，作为下一根的昨收/增量基准。
 
 		bar.RiseRate = bar.GetRiseRate()

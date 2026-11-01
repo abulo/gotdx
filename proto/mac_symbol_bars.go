@@ -78,7 +78,6 @@ type MACSymbolBar struct {
 	FloatShares float64   // 流通股本，单精度浮点还原。
 	Turnover    float64   // 换手率；条目记录未直接填充该槽位，口径语义待确认。
 	PreClose    float64   // 昨收价，取上一根收盘价作为基准。
-	LastClose   float64   // 前收价，与 `PreClose` 同源。
 	RisePrice   float64   // 涨跌价，由收盘价相对昨收价计算。
 	RiseRate    float64   // 涨跌幅，百分比数值。
 }
@@ -182,7 +181,6 @@ func (obj *MACSymbolBars) ParseResponse(header *RespHeader, data []byte) error {
 		}
 		// 昨收与前收取上一根收盘价，随后把基准滚动为当前收盘价，再计算涨跌价与涨跌幅。
 		item.PreClose = preCloseRaw
-		item.LastClose = preCloseRaw
 		preCloseRaw = item.Close
 		item.RiseRate = item.GetRiseRate()
 		item.RisePrice = item.GetRisePrice()

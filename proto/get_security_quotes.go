@@ -41,7 +41,6 @@ type SecurityQuote struct {
 	Close      float64 // 最新价，单位为元，由基准价直接还原。
 	Price      float64 // 当前价，单位为元，通常与最新价一致。
 	PreClose   float64 // 昨收价，单位为元，基准价加差值后除以 100。
-	LastClose  float64 // 前收价别名，单位为元，通常与昨收价一致。
 	Open       float64 // 今开价，单位为元，基准价加差值后除以 100。
 	High       float64 // 最高价，单位为元，基准价加差值后除以 100。
 	Low        float64 // 最低价，单位为元，基准价加差值后除以 100。
@@ -217,7 +216,6 @@ func (obj *GetSecurityQuotes) ParseResponse(header *RespHeader, data []byte) err
 		ele.Close = float64(basePrice) / 100.0
 		ele.Price = ele.Close
 		ele.PreClose = float64(basePrice+preCloseDiff) / 100.0
-		ele.LastClose = ele.PreClose
 		ele.Open = float64(basePrice+openDiff) / 100.0
 		ele.High = float64(basePrice+highDiff) / 100.0
 		ele.Low = float64(basePrice+lowDiff) / 100.0
