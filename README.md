@@ -49,6 +49,7 @@ import (
 	"log"
 
 	"github.com/bensema/gotdx"
+	"github.com/bensema/gotdx/types"
 )
 
 func main() {
@@ -65,7 +66,7 @@ func main() {
 	defer client.Disconnect()
 
 	stocks, err := client.StockQuotesDetail(
-		[]uint8{gotdx.MarketSZ, gotdx.MarketSH},
+		[]uint8{types.MarketSZ.Uint8(), types.MarketSH.Uint8()},
 		[]string{"000001", "600519"},
 	)
 	if err != nil {
@@ -76,7 +77,7 @@ func main() {
 	}
 
 	exQuotes, err := client.ExQuotes(
-		[]uint8{gotdx.ExCategoryUSStock},
+		[]uint8{types.ExCategoryUSStock},
 		[]string{"TSLA"},
 	)
 	if err != nil {
@@ -120,18 +121,171 @@ client := gotdx.New(
 
 `gotdx.Client` 以**动态连接池**与行情服务器通信：`Connect`（或 `ConnectEx` / `ConnectMAC`）按 `WithPoolSize` 配置池容量，建池走**并行快路径**——并发拨号配置前 3 个候选、收到第一个成功即返回（波动网络无需等待首地址超时即可命中可达服务器），其余候选已建成的连接入池复用；快路径拨号超时在样本不足时使用 **500ms 默认短超时**，样本充足后按历史建连耗时中位数自适应（在 200ms～2s 之间取值），服务器偶发秒级慢响应被直接排除而非踩中样本，全候选超时失败时走**流水线探活**（拨号成功即握手、首个成功即复用）兜底。池内余量由后台补建循环异步补齐；每条连接内部串行执行请求、连接之间并行，吞吐不受单连接往返限制。运行期间健康状态下**每分钟**重新探活并切换到当前最快的服务器，识别出慢节点后缩短到 **15 秒**一轮（候选收敛为池内地址与最近可达地址，每 5 次全量刷新一次）；另有**应用层心跳**——活跃连接 **30 秒**一轮、空闲连接 **60 秒**一轮，近 2 分钟内有业务活动的连接本轮直接跳过，2 秒短超时判定僵死连接并丢弃补建——与 **TCP keepalive**（15 秒周期，兜底无握手协议的 MAC 模式），网络波动或服务器迁移时连接池自动跟随。
 
+连接池完整工作流如下（请求路径与后台维护并行运行）：
+
+```mermaid
+flowchart TD
+    Start["构造 New / NewEx / NewMAC / NewMACEx"] --> Trig{"首次查询<br/>或显式 Connect*"}
+    Trig -->|"是（建池）"| Build["建池：随机抽 3 候选并行拨号+握手"]
+    Build -->|"首个成功即返回"| Pool[("连接池<br/>PoolSize 条")]
+    Build -->|"全部失败"| Probe["流水线探活兜底"]
+    Probe --> Pool
+    Trig -->|"否（复用池）"| Req
+    Pool --> Req["查询请求"]
+    Req --> Acq{"定向持久化<br/>lastDataAddr 存在?"}
+    Acq -->|"是"| Take["优先借最近成功节点连接"]
+    Acq -->|"否"| Take2["轮询借出池内连接"]
+    Take --> Exec["借出连接执行协议请求"]
+    Take2 --> Exec
+    Exec --> Empty{"应答 Count==0?"}
+    Empty -->|"否"| Ok["成功：setDataAddr 记录节点<br/>release 归还"]
+    Empty -->|"是"| Retry["并行探测池内其他连接"]
+    Retry -->|"首个非空"| Ok
+    Retry -->|"仍全空"| GiveUp["返回首次应答<br/>该日期确实无数据"]
+    Ok --> Req
+    GiveUp --> Req
+
+    subgraph BG["后台维护"]
+        Reb["重平衡：健康 1min / 慢节点 15s"] -->|"新节点延迟低于当前 90%"| Sw["切换更快节点"]
+        HB["心跳：活跃 30s / 空闲 60s"] -->|"2s 超时判死"| Drop["丢弃僵死连接"]
+        Drop --> Refill["补建循环：每秒补齐<br/>失败回退候选池"]
+    end
+
+    Down["Disconnect"] --> Close["关闭全部连接并停止后台循环"]
+```
+
+**工作机制**（调用方只需要构造客户端、必要时显式建连、用完 `Disconnect`，查询方法内部自动完成池内连接的借出、归还与换线）：
+
+1. **建连**：`New*` 不拨号，首次查询或显式 `Connect*` 时才建池。建池走**并行快路径**：随机抽 3 个候选并发拨号并握手，第一个成功即返回（波动网络无需等待首地址超时即可命中可达服务器），其余已建成的连接入池复用；快路径超时在样本不足时用 500ms 默认值，样本充足后按历史建连耗时中位数自适应（200ms～2s），偶发秒级慢响应被直接排除；全部候选失败时走流水线探活兜底。
+2. **首次收敛**：建池后立即按拨号+握手总耗时对已收候选排序，后台预比较提前切换到最快候选，不等每分钟重平衡完成首次收敛，开局即落在较优节点。
+3. **定向持久化**：每次查询成功后记录"最近成功节点"，下次请求优先借出该节点的连接——请求稳定落在一个已确认可达的节点上，不会每请求重新测速；节点一旦劣化，由重平衡或心跳换线。
+4. **空数据处理**：应答无记录（`Count==0`）时判定为空，**并行**探测池内其他连接、取首个非空应答（尾延迟从串行 3×RTT 降到约 1×RTT）；连续多次返回空的节点健康度降权，定向与轮询都会跳过。仍全空时返回首次应答（该日期确实无数据）。
+5. **重平衡**：后台周期性探活切换更快节点——健康时每 1 分钟一轮，识别到慢节点后缩短到 15 秒一轮（候选收敛为池内地址与最近可达地址，每 5 次全量刷新）；新节点必须明显更优（默认阈值 0.9，即新节点延迟低于当前 90%）才切换，避免频繁换线。
+6. **保活与自愈**：应用层心跳活跃连接 30 秒一轮、空闲连接 60 秒一轮（近 2 分钟有业务活动则跳过），2 秒短超时判定僵死连接并丢弃；TCP keepalive 15 秒兜底无握手协议的 MAC 模式。任一条连接被丢弃后，后台补建循环每秒检查池容量自动补齐，补建失败回退其他候选。
+7. **释放**：`Disconnect` 关闭池内全部连接并停止后台循环，可重复调用。
+
+### 四个入口
+
+四个入口的构造与建连方式一致，差异在握手机制与能力域：
+
+| 入口 | 构造 | 显式建连 | 握手 | 能力域 |
+| --- | --- | --- | --- | --- |
+| 主行情 | `gotdx.New` | `Connect()` | Hello1 | A 股/指数快照、K 线、分时、逐笔、F10、文件 |
+| 扩展市场 | `gotdx.NewEx` | `ConnectEx()` | ExLogin | 美股/港股/期货等扩展标的列表、报价、K 线、历史成交、表格 |
+| MAC 主站 | `gotdx.NewMAC` | `ConnectMAC()` | 无（拨号即连） | 板块行情、成分报价、单只快照、逐笔、竞价、资金流向 |
+| MAC 扩展站 | `gotdx.NewMACEx` | `ConnectMAC()` | MAC 协议握手 | MAC 扩展行情，查询方法同 MAC 协议族 |
+
 ```go
-client := gotdx.New(
-	gotdx.WithPoolSize(3),       // 默认 3，非正数忽略并回退默认
-	gotdx.WithTimeoutSec(6),
-)
+// 主行情入口
+client := gotdx.New(gotdx.WithTimeoutSec(6))
 if _, err := client.Connect(); err != nil {
 	log.Fatal(err)
 }
 defer client.Disconnect()
+
+stocks, err := client.StockQuotesDetail(
+	[]uint8{types.MarketSZ.Uint8(), types.MarketSH.Uint8()},
+	[]string{"000001", "600519"},
+)
+if err != nil {
+	log.Fatal(err)
+}
+for _, item := range stocks {
+	log.Printf("code=%s price=%.2f turnover=%.2f%%", item.Code, item.Price, item.Turnover)
+}
 ```
 
-运行期某条连接被丢弃（网络错误、响应帧损坏、心跳判死）后，后台补建循环每秒检查池容量并自动补齐；`Disconnect` 关闭池内全部连接并停止补建。`CurrentAddress` 返回池内首条连接实际连通的服务器地址。各查询方法保持原有签名，可安全并发调用。
+```go
+// 扩展市场入口（美股历史成交）
+exClient := gotdx.NewEx(gotdx.WithTimeoutSec(6))
+if _, err := exClient.ConnectEx(); err != nil {
+	log.Fatal(err)
+}
+defer exClient.Disconnect()
+
+items, err := exClient.ExHistoryTransaction(20260330, types.ExCategoryUSStock, "TSLA")
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("history items=%d", len(items))
+```
+
+```go
+// MAC 主站入口（深市单只快照）
+macClient := gotdx.NewMAC(gotdx.WithTimeoutSec(6))
+if err := macClient.ConnectMAC(); err != nil {
+	log.Fatal(err)
+}
+defer macClient.Disconnect()
+
+quotes, err := macClient.MACQuotes(types.MarketSZ.Uint8(), "000001")
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("code=%s name=%s price=%.2f", quotes.Code, quotes.Name, quotes.Price)
+```
+
+```go
+// MAC 扩展站入口（深市日 K，查询方法同 MAC 协议族；需 import "github.com/bensema/gotdx/types"）
+macExClient := gotdx.NewMACEx(gotdx.WithTimeoutSec(6))
+if err := macExClient.ConnectMAC(); err != nil {
+	log.Fatal(err)
+}
+defer macExClient.Disconnect()
+
+bars, err := macExClient.MACSymbolBars(
+	types.MarketSZ.Uint8(), "000001",
+	types.KLINE_TYPE_DAILY, 1, 0, 10, types.AdjustNone,
+)
+if err != nil {
+	log.Fatal(err)
+}
+if len(bars) > 0 {
+	log.Printf("bars=%d lastClose=%.2f", len(bars), bars[len(bars)-1].Close)
+}
+```
+
+### 选项与场景配置
+
+不传任何选项即用内置默认（内置地址池 + `PoolSize=3` + 超时 8 秒）；按场景调整：
+
+```go
+// 场景一：默认多连接池，并发抓取多市场；无需选项或只调超时
+client := gotdx.NewEx(gotdx.WithTimeoutSec(6))
+
+// 场景二：单并发、追求窄尾延迟 —— 单连接模式（池=1 + 关闭空数据换节点）
+client := gotdx.NewEx(gotdx.WithSingleConnectionMode(), gotdx.WithTimeoutSec(6))
+
+// 场景三：自定义地址池 + 预测速，把最快节点设为首选
+fastest, err := gotdx.FastestHost(gotdx.ExHosts(), 3*time.Second)
+if err != nil {
+	log.Fatal(err)
+}
+client := gotdx.NewEx(
+	gotdx.WithExTCPAddress(fastest.Address),
+	gotdx.WithExTCPAddressPool(gotdx.ExHostAddresses()...),
+	gotdx.WithTimeoutSec(6),
+)
+```
+
+| 选项 | 默认 | 说明 |
+| --- | --- | --- |
+| `WithPoolSize(n)` | 3 | 池内并行 TCP 连接条数，越大并发吞吐越高 |
+| `WithSingleConnectionMode()` | 关闭 | 池大小置 1 并关闭空数据换节点，见下方「单连接模式」 |
+| `WithEmptyNodeSwitchDisabled(true)` | 关闭 | 单独关闭空数据换节点，不改变池大小 |
+| `WithTCPAddress` / `WithTCPAddressPool` | 内置池 | 主行情单点地址 / 地址池 |
+| `WithExTCPAddress` / `WithExTCPAddressPool` | 内置池 | 扩展行情单点地址 / 地址池 |
+| `WithMacTCPAddress` / `WithMacTCPAddressPool` | 内置池 | MAC 主站单点地址 / 地址池 |
+| `WithMacExTCPAddress` / `WithMacExTCPAddressPool` | 内置池 | MAC 扩展站单点地址 / 地址池 |
+| `WithTimeoutSec(n)` | 8 秒 | 连接与读写共用超时，非正数忽略并回退默认 |
+
+### 连接语义与并发
+
+- 每条池内连接**内部串行**执行请求，**连接之间并行**，吞吐随 `PoolSize` 增长（默认 3 条）；
+- 借出与归还由查询方法内部完成，所有公开方法**并发安全**，可直接多 goroutine 同时调用；
+- 显式 `Connect*` 幂等：已有池直接复用，不重复拨号；
+- `Disconnect` 幂等：关闭全部连接并停止补建、心跳、重平衡循环；
+- `CurrentAddress` 返回池内首条连接实际连通的服务器地址，用于观测与日志。
 
 ### 单连接模式
 
