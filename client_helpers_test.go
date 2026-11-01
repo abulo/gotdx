@@ -160,3 +160,66 @@ func TestMakeExStocks(t *testing.T) {
 		t.Fatalf("unexpected first ex stock: %+v", stocks[0])
 	}
 }
+
+// TestNodeHealthDowngradesAfterEmptyStreak 验证同一节点连续空数据达到阈值后被标记降权，
+// 一次非空成功后计数清零、节点恢复定向资格。
+func TestNodeHealthDowngradesAfterEmptyStreak(t *testing.T) {
+	c := New(WithPoolSize(1))
+	addr := "127.0.0.1:7727"
+
+	// 未记录健康度（从未返回空数据）时不视为降权，保持原定向行为。
+	if c.nodeHealthDegradedLocked(addr) {
+		t.Fatal("fresh node must not be degraded")
+	}
+	for i := 0; i < healthDowngradeThreshold-1; i++ {
+		c.recordNodeHealthEmpty(addr)
+		if c.nodeHealthDegradedLocked(addr) {
+			t.Fatalf("node must stay usable before streak threshold, round %d", i+1)
+		}
+	}
+	c.recordNodeHealthEmpty(addr)
+	if !c.nodeHealthDegradedLocked(addr) {
+		t.Fatal("node must be degraded after threshold empty streak")
+	}
+	c.recordNodeHealthOK(addr)
+	if c.nodeHealthDegradedLocked(addr) {
+		t.Fatal("node must recover after a non-empty reply")
+	}
+}
+
+// TestAcquireSkipsDegradedTarget 验证定向节点被降权后，借出跳过该节点回退轮询；节点恢复
+// 后定向优先重新生效。
+func TestAcquireSkipsDegradedTarget(t *testing.T) {
+	addrA, addrB := "10.0.0.1:7727", "10.0.0.2:7727"
+	c := New(WithPoolSize(2))
+	for i := 0; i < healthDowngradeThreshold; i++ {
+		c.recordNodeHealthEmpty(addrA)
+	}
+
+	pcA := &pooledConn{addr: addrA}
+	pcB := &pooledConn{addr: addrB}
+	c.mu.Lock()
+	c.pool = []*pooledConn{pcA, pcB}
+	c.lastDataAddr = addrA
+	c.mu.Unlock()
+
+	// 降权节点 A 被跳过，轮询借出 B。
+	pc, err := c.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.addr != addrB {
+		t.Fatalf("degraded target must be skipped, acquired %s", pc.addr)
+	}
+	c.release(pc)
+
+	// A 返回一次非空后恢复定向资格，再次借出优先命中 A。
+	c.recordNodeHealthOK(addrA)
+	pc, err = c.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.addr != addrA {
+		t.Fatalf("recovered target must be preferred, acquired %s", pc.addr)
+	}
+}

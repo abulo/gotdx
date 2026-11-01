@@ -82,6 +82,7 @@ type Client struct {
 	decimalPointsLoaded map[uint8]bool
 	lastReachable       []string                 // 最近一次探活确认可达的地址列表，按测得耗时升序，供重平衡与补建收敛候选
 	addrLatency         map[string]time.Duration // 各地址最近一次建连测得的拨号+握手总耗时，供候选排序与后台预比较；池锁保护
+	health              map[string]*nodeHealth   // 各地址连续空数据健康度统计，定向借出对降权节点跳过；池锁保护
 	rebalanceTick       int                      // 重平衡执行计数，每 5 次触发一次全量探活刷新可达集
 }
 
@@ -303,15 +304,17 @@ func removeAddress(addresses []string, target string) []string {
 // 待补建）时返回"无可用连接"错误。
 //
 // 定向优先：存在"最近成功响应的服务器"（`lastDataAddr`）时，优先借出同地址连接，
-// 让请求稳定落在已验证可用的节点上（模拟老库固定单节点的稳定性）；池内无该地址
-// （已被重平衡切换或丢弃）时回退轮询。
+// 让请求稳定落在已验证可用的节点上（模拟老库固定单节点的稳定性）；定向节点连续空
+// 数据被降权，或池内无该地址（已被重平衡切换或丢弃）时回退轮询；轮询同样优先跳过
+// 降权节点，全部降权时回退原轮询兜底。
 func (client *Client) acquire() (*pooledConn, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if client.closed || len(client.pool) == 0 {
 		return nil, errors.New("no available connection")
 	}
-	if client.lastDataAddr != "" {
+	// 定向节点连续空数据达到降权阈值时跳过定向、回退轮询，避免继续绑定数据不全的节点。
+	if client.lastDataAddr != "" && !client.nodeHealthDegradedLocked(client.lastDataAddr) {
 		for i, pc := range client.pool {
 			if pc.addr == client.lastDataAddr {
 				client.pool = append(client.pool[:i], client.pool[i+1:]...)
@@ -320,10 +323,27 @@ func (client *Client) acquire() (*pooledConn, error) {
 			}
 		}
 	}
-	idx := client.next % len(client.pool)
+	// 轮询同样优先跳过降权节点；池内存在健康连接时只在健康连接间轮询，全部降权时
+	// 回退原轮询，避免健康连接被抽空后无连接可借。
+	candidates := client.pool
+	healthy := make([]*pooledConn, 0, len(client.pool))
+	for _, pc := range client.pool {
+		if !client.nodeHealthDegradedLocked(pc.addr) {
+			healthy = append(healthy, pc)
+		}
+	}
+	if len(healthy) > 0 {
+		candidates = healthy
+	}
+	idx := client.next % len(candidates)
 	client.next++
-	pc := client.pool[idx]
-	client.pool = append(client.pool[:idx], client.pool[idx+1:]...)
+	pc := candidates[idx]
+	for i, p := range client.pool {
+		if p == pc {
+			client.pool = append(client.pool[:i], client.pool[i+1:]...)
+			break
+		}
+	}
 	client.inUse++
 	return pc, nil
 }

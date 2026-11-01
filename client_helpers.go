@@ -3,6 +3,7 @@ package gotdx
 import (
 	"errors"
 	"reflect"
+	"sync"
 
 	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
@@ -19,10 +20,11 @@ var ErrMarketCodeCount = errors.New("market code count error")
 // 定向优先同地址连接，让请求稳定落回已验证节点；该地址仅在重平衡切换或连接丢弃后
 // 自然失效。
 //
-// 空数据换节点：应答为空数据（通用判空规则见 `isEmptyReply`）时解除定向并换池内另一条
-// 连接重试（最多 2 次），命中非空后重新定向；重试仍空（该日期确实无成交）返回首次应答。
-// 部分服务器对较早历史日期数据不全，多地址池下换节点可命中数据完整的服务器（老库固定
-// 单节点必然命中其节点，新库以换节点重试达成同等稳定）。
+// 空数据换节点：应答为空数据（通用判空规则见 `isEmptyReply`）时解除定向、累计该节点
+// 空数据健康度，并并行探测池内其余连接取首个非空应答（重试条数沿用原最多 2 次上限）；
+// 命中非空后重新定向并清零该节点空数据计数；并行探测仍空（该日期确实无成交）返回首次
+// 应答。部分服务器对较早历史日期数据不全，多地址池下换节点可命中数据完整的服务器
+// （老库固定单节点必然命中其节点，新库以换节点重试达成同等稳定）。
 //
 // 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；池内暂无连接（未连接或全部被
 // 借出/丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
@@ -33,22 +35,61 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 		return zero, err
 	}
 	if isEmptyReply(reply) {
-		// 空数据换节点重试：解除对当前节点的定向，换池内另一条连接再查。
-		// 命中非空后重新定向到该节点；重试仍空返回首次应答（该日期确实无成交）。
+		// 空数据：解除对当前节点的定向并计入健康度，随后并行探测其余连接。
 		client.clearDataAddr(addr)
-		for i := 0; i < 2; i++ {
-			if r2, addr2, err2 := client.executeOnce(protocol); err2 == nil {
-				if !isEmptyReply(r2) {
-					client.setDataAddr(addr2)
-					return r2, nil
-				}
-			}
+		client.recordNodeHealthEmpty(addr)
+		if nonEmpty, nonEmptyAddr, found := client.parallelEmptyRetry(protocol); found {
+			client.recordNodeHealthOK(nonEmptyAddr)
+			client.setDataAddr(nonEmptyAddr)
+			return nonEmpty, nil
 		}
+		// 并行探测仍空：该日期确实无成交，返回首次应答；各节点空数据计数已沉淀。
 		return reply, nil
 	}
-	// 本次连接即为可用节点，记录供定向优先复用，让后续请求稳定落回该服务器。
+	// 本次连接即为可用节点：清零其空数据计数并记录供定向优先复用。
+	client.recordNodeHealthOK(addr)
 	client.setDataAddr(addr)
 	return reply, nil
+}
+
+// parallelEmptyRetry 在首查空数据后并行探测池内其余连接，取首个非空应答。
+//
+// 方案决策：原实现串行最多 2 次 `executeOnce`，慢节点上最坏尾延迟叠加 3 个 RTT；改为
+// 并发借出池内空闲连接同时探测，首个非空应答立即胜出，尾延迟收敛到约 1 个 RTT。并发
+// 探测条数沿用原最多 2 次的重试上限；各 `executeOnce` 自行借出/归还连接，连接串行锁
+// 保证帧边界不被并发破坏。在途探测在 `WaitGroup` 中收尾，连接由 `executeOnce` 自行
+// 归还或销毁，不泄漏。全部探测出错或仍空时 `found` 为 `false`，由调用方返回首次空应答。
+func (client *Client) parallelEmptyRetry[T any](protocol proto.Protocol[T]) (T, string, bool) {
+	var zero T
+	const maxEmptyRetry = 2
+	type retryResult struct {
+		reply T
+		addr  string
+		err   error
+		empty bool
+	}
+	results := make(chan retryResult, maxEmptyRetry)
+	var wg sync.WaitGroup
+	for i := 0; i < maxEmptyRetry; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, addr, err := client.executeOnce(protocol)
+			results <- retryResult{reply: r, addr: addr, err: err, empty: err == nil && isEmptyReply(r)}
+		}()
+	}
+	go func() { wg.Wait(); close(results) }()
+	for res := range results {
+		if res.err != nil {
+			continue
+		}
+		if res.empty {
+			client.recordNodeHealthEmpty(res.addr)
+			continue
+		}
+		return res.reply, res.addr, true
+	}
+	return zero, "", false
 }
 
 // isEmptyReply 通过反射报告协议应答是否为空数据：历史、分时、逐笔类协议的应答
@@ -103,6 +144,17 @@ func makeCode6(code string) [6]byte {
 	return out
 }
 
+// healthDowngradeThreshold 为节点连续空数据降权阈值：达到该次数后定向借出跳过该地址、
+// 回退轮询。取值保守：偶发单次空数据（该日期确实无成交）不触发降权，只有同一节点连续
+// 返回空数据才判定为数据不全并降低其定向优先级。
+const healthDowngradeThreshold = 3
+
+// nodeHealth 记录单个服务器地址的数据完整度健康度：`emptyStreak` 为连续空数据次数，
+// 一次非空成功即清零；计数达到 `healthDowngradeThreshold` 后该地址不再参与借出定向。
+type nodeHealth struct {
+	emptyStreak int
+}
+
 // setDataAddr 记录指定地址为最近成功响应的服务器，供借出定向优先复用。
 func (client *Client) setDataAddr(addr string) {
 	client.mu.Lock()
@@ -120,6 +172,53 @@ func (client *Client) clearDataAddr(addr string) {
 	if client.lastDataAddr == addr {
 		client.lastDataAddr = ""
 	}
+}
+
+// recordNodeHealthOK 记录指定地址本次返回非空数据：清零其连续空数据计数，节点恢复定向
+// 资格；空地址忽略。映射惰性初始化，健康度统计只影响内部定向排序，不改变公开 API。
+func (client *Client) recordNodeHealthOK(addr string) {
+	if addr == "" {
+		return
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.health == nil {
+		client.health = make(map[string]*nodeHealth)
+	}
+	h := client.health[addr]
+	if h == nil {
+		h = &nodeHealth{}
+		client.health[addr] = h
+	}
+	h.emptyStreak = 0
+}
+
+// recordNodeHealthEmpty 记录指定地址本次返回空数据：累加连续空数据计数；空地址忽略。
+func (client *Client) recordNodeHealthEmpty(addr string) {
+	if addr == "" {
+		return
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.health == nil {
+		client.health = make(map[string]*nodeHealth)
+	}
+	h := client.health[addr]
+	if h == nil {
+		h = &nodeHealth{}
+		client.health[addr] = h
+	}
+	h.emptyStreak++
+}
+
+// nodeHealthDegradedLocked 报告指定地址是否已被健康度降权（连续空数据达到阈值）；
+// 调用方须已持有池锁。无健康记录（从未返回空数据）视为未降权，保持原定向行为。
+func (client *Client) nodeHealthDegradedLocked(addr string) bool {
+	if addr == "" || client.health == nil {
+		return false
+	}
+	h := client.health[addr]
+	return h != nil && h.emptyStreak >= healthDowngradeThreshold
 }
 
 func makeCode9(code string) [9]byte {
