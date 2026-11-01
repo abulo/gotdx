@@ -82,6 +82,7 @@ type Client struct {
 	decimalPointsLoaded map[uint8]bool
 	lastReachable       []string                 // 最近一次探活确认可达的地址列表，按测得耗时升序，供重平衡与补建收敛候选
 	addrLatency         map[string]time.Duration // 各地址最近一次建连测得的拨号+握手总耗时，供候选排序与后台预比较；池锁保护
+	dialSamples         []time.Duration          // 最近若干次成功建连耗时样本（环形窗口），供快路径超时取中位数自适应；池锁保护
 	health              map[string]*nodeHealth   // 各地址连续空数据健康度统计，定向借出对降权节点跳过；池锁保护
 	heartbeatLatency    map[string]time.Duration // 各地址最近一次心跳往返耗时，供慢连接判定与池内分布比较；池锁保护
 	slow                map[string]bool          // 心跳识别出的慢连接标记，触发缩短重平衡周期与放宽切换阈值；池锁保护
@@ -359,7 +360,7 @@ func (client *Client) poolAppendLocked(pc *pooledConn) {
 }
 
 // recordAddrLatencyLocked 记录指定地址最近一次建连的拨号+握手总耗时；空地址或非正
-// 耗时忽略。调用方须已持有池锁，映射按需惰性初始化。
+// 耗时忽略。调用方须已持有池锁，映射按需惰性初始化；同时把耗时沉淀进自适应样本窗口。
 func (client *Client) recordAddrLatencyLocked(addr string, elapsed time.Duration) {
 	if addr == "" || elapsed <= 0 {
 		return
@@ -368,6 +369,48 @@ func (client *Client) recordAddrLatencyLocked(addr string, elapsed time.Duration
 		client.addrLatency = make(map[string]time.Duration)
 	}
 	client.addrLatency[addr] = elapsed
+	client.recordDialSampleLocked(elapsed)
+}
+
+// recordDialSampleLocked 把一次成功建连耗时追加到环形样本窗口，超出窗口长度时丢弃最旧
+// 样本；非正耗时忽略。调用方须已持有池锁。
+func (client *Client) recordDialSampleLocked(elapsed time.Duration) {
+	if elapsed <= 0 {
+		return
+	}
+	client.dialSamples = append(client.dialSamples, elapsed)
+	if len(client.dialSamples) > dialSampleLimit {
+		client.dialSamples = client.dialSamples[len(client.dialSamples)-dialSampleLimit:]
+	}
+}
+
+// adaptiveFastDialTimeoutLocked 按历史建连耗时中位数计算快路径拨号超时。
+//
+// 方案决策：样本不足 `dialSampleMinCount` 时直接返回默认 `fastDialTimeout`，首次建池行为
+// 与现状一致；样本充足时取样本中位数并乘以余量系数，再钳制在 `fastDialMinTimeout` 与
+// `fastDialMaxTimeout` 之间——慢区域节点历史耗时偏高时自动放宽，避免被固定短超时误杀进
+// 慢路径；快网络下中位数很低，结果被下限钳制回 200ms，不放松对偶发慢样本的排除。调用方
+// 须已持有池锁。
+func (client *Client) adaptiveFastDialTimeoutLocked() time.Duration {
+	if len(client.dialSamples) < dialSampleMinCount {
+		return fastDialTimeout
+	}
+	samples := make([]time.Duration, len(client.dialSamples))
+	copy(samples, client.dialSamples)
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	mid := len(samples) / 2
+	median := samples[mid]
+	if len(samples)%2 == 0 {
+		median = (samples[mid-1] + samples[mid]) / 2
+	}
+	candidate := time.Duration(dialTimeoutHeadroom * float64(median))
+	if candidate < fastDialMinTimeout {
+		candidate = fastDialMinTimeout
+	}
+	if candidate > fastDialMaxTimeout {
+		candidate = fastDialMaxTimeout
+	}
+	return candidate
 }
 
 // recordHeartbeatLatencyLocked 记录指定地址最近一次心跳往返耗时；空地址或非正耗时
@@ -554,10 +597,21 @@ const (
 	heartbeatSlowMinElapsed = 100 * time.Millisecond
 )
 
-// fastDialTimeout 为建池快路径单次拨号超时：行情服务器正常拨号在几十毫秒量级，
-// 偶发秒级慢响应是服务器间歇波动，短超时直接排除该样本，避免建池踩中慢服务器；
-// 全部候选短超时失败转慢路径流水线探活兜底。
+// fastDialTimeout 为建池快路径单次拨号超时的默认值：行情服务器正常拨号在几十毫秒量级，
+// 样本不足（首次建池）时使用该值；样本充足后由 `adaptiveFastDialTimeoutLocked` 按历史
+// 建连耗时中位数自适应，全部候选超时失败转慢路径流水线探活兜底。
 const fastDialTimeout = 500 * time.Millisecond
+
+// 自适应快路径超时的样本窗口、上下限与余量系数：弱网/慢区域节点的历史耗时偏高时放宽
+// 超时，避免被固定 500ms 误杀进慢路径；正常快网络下收紧到下限，保持快路径排除偶发
+// 慢样本的能力。
+const (
+	fastDialMinTimeout  = 200 * time.Millisecond
+	fastDialMaxTimeout  = 2 * time.Second
+	dialSampleLimit     = 16
+	dialSampleMinCount  = 3
+	dialTimeoutHeadroom = 1.5
+)
 
 // heartbeatPool 对池内空闲连接执行应用层心跳：主站/扩展站发送握手协议请求并以
 // 短超时读回完整响应帧，能完整收发即视为连接存活；失败即丢弃该连接，由补建循环补齐。
@@ -1189,15 +1243,18 @@ func (client *Client) buildPoolLocked() (any, error) {
 	if len(addresses) < limit {
 		limit = len(addresses)
 	}
+	// 快路径拨号超时按历史样本中位数自适应：首次样本不足用默认 500ms，后续慢区域节点
+	// 自动放宽、快网络被下限钳制；调用方已持池锁，可直接读取样本窗口。
+	fastTimeout := client.adaptiveFastDialTimeoutLocked()
 	resultsCh := make(chan fastPathConnRes, limit)
 	for _, i := range rand.Perm(len(addresses))[:limit] {
 		addr := addresses[i]
 		go func() {
-			// 快路径拨号用短超时：行情服务器正常拨号在几十毫秒量级，偶发 1 秒级
+			// 快路径拨号用自适应短超时：行情服务器正常拨号在几十毫秒量级，偶发 1 秒级
 			// 慢响应是服务器间歇波动，直接排除而非踩中样本（原库固定连稳定服务器，
-			// 分布窄正源于此）；全部短超时失败转慢路径探活兜底。
+			// 分布窄正源于此）；全部超时失败转慢路径探活兜底。
 			started := time.Now()
-			pc, reply, err := client.buildPoolConnWithTimeout(addr, fastDialTimeout)
+			pc, reply, err := client.buildPoolConnWithTimeout(addr, fastTimeout)
 			resultsCh <- fastPathConnRes{pc: pc, reply: reply, err: err, elapsed: time.Since(started)}
 		}()
 	}
