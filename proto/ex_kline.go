@@ -308,12 +308,6 @@ func (obj *ExGetHistoryTransaction) Response() *ExGetHistoryTransactionReply {
 	return obj.reply
 }
 
-// IsEmptyResponse 报告最近一次解析的应答是否为空数据（无任何逐笔记录），供客户端
-// 执行层判断是否需要换节点重试：部分扩展站对较早日期数据不全，返回零条记录。
-func (obj *ExGetHistoryTransaction) IsEmptyResponse() bool {
-	return obj.reply.Count == 0 || len(obj.reply.List) == 0
-}
-
 // exAction 将方向编码映射为买卖方向文本。
 //
 // 参数 `code` 为逐笔成交末尾的`uint16` 方向编码：0 为买入、1 为卖出、2 为中性；其余编码

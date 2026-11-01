@@ -131,14 +131,6 @@ type Protocol[T any] interface {
 	Response() T
 }
 
-// EmptyResponseAware 由"应答可能为空数据"的历史数据类协议实现：客户端执行层在解析
-// 成功后若判定应答为空，会自动换节点重试，尽量命中数据完整的服务器（部分扩展站对
-// 较早日期数据不全，固定单节点的老库必然命中其节点，多地址池需重试达成同等稳定）。
-type EmptyResponseAware interface {
-	// IsEmptyResponse 报告最近一次解析的应答是否为空数据（无任何记录）。
-	IsEmptyResponse() bool
-}
-
 var seqIDCounter atomic.Uint32
 
 // ReqHeader 是发往服务端的请求报文头，共占 16 字节，由各协议请求在组装报文时填充。

@@ -2,7 +2,6 @@ package gotdx
 
 import (
 	"errors"
-	"math/rand"
 
 	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
@@ -15,10 +14,9 @@ var ErrMarketCodeCount = errors.New("market code count error")
 // execute 完成一次协议请求-响应流程：从池内借出一条连接（借出即移出池）、持该连接
 // 串行锁执行收发，解析成功后归还池内；收发或解析失败时由池销毁该条并后台补建。
 //
-// 协议对象若实现 `proto.EmptyResponseAware` 且最近一次应答为空数据（部分扩展站对较早
-// 日期数据不全），执行层自动换节点重试：先换池内另一条连接（定向优先下大概率借出
-// 不同服务器），仍空则从配置地址池换地址临时建连再查（优先最近一次命中数据的服务器）。
-// 重试仍空（该日期确实无成交）时返回首次应答，保持"一次调用一次结果"的语义。
+// 成功后记录本次借出连接地址为"最近成功响应的服务器"（`lastDataAddr`），后续借出
+// 定向优先同地址连接，让请求稳定落回已验证节点；该地址仅在重平衡切换或连接丢弃后
+// 自然失效。解析成功即记录，不区分应答内容。
 //
 // 参数 `protocol` 为待执行的协议对象，泛型 `T` 为应答类型；池内暂无连接（未连接或全部被
 // 借出/丢弃待补建）或收发、解析失败时返回 `T` 零值与错误。
@@ -28,44 +26,14 @@ func (client *Client) execute[T any](protocol proto.Protocol[T]) (T, error) {
 	if err != nil {
 		return zero, err
 	}
-	// 空响应换节点重试：仅对声明了 `EmptyResponseAware` 的协议生效，其余协议单次执行。
-	if retrier, ok := any(protocol).(proto.EmptyResponseAware); ok && retrier.IsEmptyResponse() {
-		// 池内重试：换池内另一条连接（多地址池下大概率指向不同服务器）。
-		// 复用同一协议对象串行执行，多次解析覆盖应答，最终返回最后一次结果。
-		for i := 0; i < 2; i++ {
-			if r2, addr2, err2 := client.executeOnce(protocol); err2 == nil && !retrier.IsEmptyResponse() {
-				client.setDataAddr(addr2)
-				return r2, nil
-			}
-		}
-		// 临时换地址重试：优先最近一次命中数据的服务器，其次从配置地址池随机换
-		// 地址临时建连（最多两个随机候选）。临时连接用完即关，不污染池。
-		candidates := make([]string, 0, 3)
-		if addr := client.dataAddr(); addr != "" {
-			candidates = append(candidates, addr)
-		}
-		for i := 0; i < 2; i++ {
-			if addr := client.randomOtherAddress(client.CurrentAddress()); addr != "" {
-				candidates = append(candidates, addr)
-			}
-		}
-		for _, a := range candidates {
-			if r3, err3 := client.executeTemporary(a, protocol); err3 == nil && !retrier.IsEmptyResponse() {
-				client.setDataAddr(a)
-				return r3, nil
-			}
-		}
-		return reply, nil
-	}
-	// 非空响应（或未声明空感知的协议）：本次连接即为可用节点，记录供定向优先
-	// 与空重试复用，让后续请求稳定落回该服务器。
+	// 本次连接即为可用节点，记录供定向优先复用，让后续请求稳定落回该服务器。
 	client.setDataAddr(addr)
 	return reply, nil
 }
 
-// executeOnce 执行单次协议请求-响应：借出连接、收发、解析并归还/销毁连接，不包含
-// 空响应重试逻辑，由 `execute` 编排调用。返回值依次为应答、本次借出连接的实际地址
-// 与错误（无错误时为 `nil`）。
+// executeOnce 执行单次协议请求-响应：借出连接、收发、解析并归还/销毁连接，由
+// `execute` 编排调用。返回值依次为应答、本次借出连接的实际地址与错误（无错误时
+// 为 `nil`）。
 func (client *Client) executeOnce[T any](protocol proto.Protocol[T]) (T, string, error) {
 	var zero T
 	pc, err := client.acquire()
@@ -94,51 +62,7 @@ func makeCode6(code string) [6]byte {
 	return out
 }
 
-// executeTemporary 在指定地址上临时建立连接（含模式握手）执行一次协议请求后立即关闭，
-// 用于空数据重试兜底：池内连接指向的服务器对部分历史日期数据不全时，临时换地址再查。
-// 临时连接不进入池，执行结束即释放，避免影响池容量与心跳/重平衡巡检。
-func (client *Client) executeTemporary[T any](addr string, protocol proto.Protocol[T]) (T, error) {
-	var zero T
-	pc, _, err := client.buildPoolConn(addr)
-	if err != nil {
-		return zero, err
-	}
-	defer func() { _ = pc.conn.Close() }()
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	header, payload, err := client.exchange(pc.conn, protocol)
-	if err == nil {
-		err = protocol.ParseResponse(header, payload)
-	}
-	if err != nil {
-		return zero, err
-	}
-	return protocol.Response(), nil
-}
-
-// randomOtherAddress 从配置地址池中随机返回一个与 `current` 不同的地址；地址池仅含
-// `current`（或无其他地址）时返回空字符串。随机化避免重试固定落在同一波动窗口。
-func (client *Client) randomOtherAddress(current string) string {
-	others := make([]string, 0, 4)
-	for _, a := range client.addresses() {
-		if a != current {
-			others = append(others, a)
-		}
-	}
-	if len(others) == 0 {
-		return ""
-	}
-	return others[rand.Intn(len(others))]
-}
-
-// dataAddr 返回最近一次命中数据的服务器地址；无记录时返回空字符串。
-func (client *Client) dataAddr() string {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	return client.lastDataAddr
-}
-
-// setDataAddr 显式记录指定地址为最近命中数据的服务器（临时重试命中后回写）。
+// setDataAddr 记录指定地址为最近成功响应的服务器，供借出定向优先复用。
 func (client *Client) setDataAddr(addr string) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
